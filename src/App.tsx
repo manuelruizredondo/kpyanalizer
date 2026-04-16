@@ -37,6 +37,8 @@ function AnalyzePage() {
   const [saveFormData, setSaveFormData] = useState({
     projectId: '',
     label: '',
+
+
   })
   const [savingStatus, setSavingStatus] = useState<{
     state: 'idle' | 'loading' | 'success' | 'error'
