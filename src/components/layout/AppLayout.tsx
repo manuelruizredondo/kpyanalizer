@@ -14,13 +14,13 @@ export function AppLayout({ children }: AppLayoutProps) {
   const isActive = (path: string) => location.pathname === path
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <header className="bg-white border-b border-gray-200">
+    <div className="min-h-screen bg-[#f8f9fa]">
+      <header className="bg-white/80 backdrop-blur-xl border-0">
         <div className="max-w-7xl mx-auto px-6 py-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <Code size={28} className="text-blue-600" />
-              <h1 className="text-xl font-bold text-gray-900">
+              <Code size={28} className="text-[#006c48]" />
+              <h1 className="text-xl font-bold text-[#012d1d]">
                 KPY CSS Analyzer
               </h1>
             </div>
@@ -30,8 +30,8 @@ export function AppLayout({ children }: AppLayoutProps) {
                 to="/analyze"
                 className={`text-sm font-medium transition-colors ${
                   isActive('/analyze')
-                    ? 'text-blue-600'
-                    : 'text-gray-600 hover:text-gray-900'
+                    ? 'text-[#006c48]'
+                    : 'text-[#3d5a4a] hover:text-[#1a2e23]'
                 }`}
               >
                 Analizar
@@ -40,8 +40,8 @@ export function AppLayout({ children }: AppLayoutProps) {
                 to="/dashboard"
                 className={`text-sm font-medium transition-colors ${
                   isActive('/dashboard')
-                    ? 'text-blue-600'
-                    : 'text-gray-600 hover:text-gray-900'
+                    ? 'text-[#006c48]'
+                    : 'text-[#3d5a4a] hover:text-[#1a2e23]'
                 }`}
               >
                 Dashboard
@@ -50,16 +50,16 @@ export function AppLayout({ children }: AppLayoutProps) {
 
             <div className="flex items-center gap-4">
               <div className="text-right">
-                <p className="text-sm font-medium text-gray-900">
+                <p className="text-sm font-medium text-[#1a2e23]">
                   {profile?.full_name || profile?.email || 'Usuario'}
                 </p>
-                <Badge variant="secondary" className="mt-1">
+                <Badge className="mt-1 bg-[#e0f5ec] text-[#012d1d]">
                   {profile?.role === 'super_admin' ? 'Admin' : 'Editor'}
                 </Badge>
               </div>
               <button
                 onClick={signOut}
-                className="text-sm font-medium text-red-600 hover:text-red-800 transition-colors"
+                className="text-sm font-medium text-[#9e2b25] hover:text-[#7a1e1a] transition-colors"
               >
                 Cerrar sesión
               </button>

@@ -121,9 +121,9 @@ export function DashboardPage() {
   const selectedProject = projects.find((p) => p.id === selectedProjectId)
 
   const getHealthScoreBadgeColor = (score: number) => {
-    if (score >= 70) return 'bg-green-100 text-green-800'
-    if (score >= 40) return 'bg-yellow-100 text-yellow-800'
-    return 'bg-red-100 text-red-800'
+    if (score >= 70) return 'bg-[#e0f5ec] text-[#006c48]'
+    if (score >= 40) return 'bg-[#fef6e0] text-[#a67c00]'
+    return 'bg-[#fef2f1] text-[#9e2b25]'
   }
 
   // Charts data - use scans in chronological order (oldest first)
@@ -168,9 +168,9 @@ export function DashboardPage() {
   return (
     <div className="flex min-h-[calc(100vh-73px)]">
       {/* Left Sidebar */}
-      <div className="w-64 bg-white border-r border-gray-200 p-6">
+      <div className="w-64 bg-[#f0f2f1] border-0 p-6">
         <div className="mb-6">
-          <h2 className="text-lg font-semibold text-gray-900 mb-4">Proyectos</h2>
+          <h2 className="text-lg font-semibold text-[#1a2e23] mb-4">Proyectos</h2>
 
           {!showNewProjectForm ? (
             <Button
@@ -181,19 +181,19 @@ export function DashboardPage() {
               Nuevo proyecto
             </Button>
           ) : (
-            <div className="space-y-3 p-3 bg-gray-50 rounded-lg">
+            <div className="space-y-3 p-3 bg-white rounded-xl border-0">
               <input
                 type="text"
                 placeholder="Nombre del proyecto"
                 value={newProjectName}
                 onChange={(e) => setNewProjectName(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full px-3 py-2 bg-[#f8f9fa] rounded-xl border-0 text-sm focus:outline-none focus:ring-2 focus:ring-[#006c48]"
               />
               <textarea
                 placeholder="Descripción (opcional)"
                 value={newProjectDescription}
                 onChange={(e) => setNewProjectDescription(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+                className="w-full px-3 py-2 bg-[#f8f9fa] rounded-xl border-0 text-sm focus:outline-none focus:ring-2 focus:ring-[#006c48] resize-none"
                 rows={2}
               />
               <div className="flex gap-2">
@@ -223,19 +223,19 @@ export function DashboardPage() {
               key={project.id}
               className={`p-3 rounded-lg cursor-pointer transition-colors ${
                 selectedProjectId === project.id
-                  ? 'bg-blue-50 border-2 border-blue-500'
-                  : 'bg-gray-50 border border-gray-200 hover:bg-gray-100'
+                  ? 'bg-[#e0f5ec] border-0'
+                  : 'bg-white/60 border-0 hover:bg-white'
               }`}
             >
               <button
                 onClick={() => setSelectedProjectId(project.id)}
                 className="w-full text-left"
               >
-                <h3 className="font-medium text-gray-900 text-sm">
+                <h3 className="font-medium text-[#1a2e23] text-sm">
                   {project.name}
                 </h3>
                 {project.description && (
-                  <p className="text-xs text-gray-400 mt-0.5 truncate">
+                  <p className="text-xs text-[#3d5a4a] mt-0.5 truncate">
                     {project.description}
                   </p>
                 )}
@@ -243,7 +243,7 @@ export function DashboardPage() {
               {profile?.role === 'super_admin' && (
                 <button
                   onClick={() => handleDeleteProject(project.id)}
-                  className="mt-2 w-full text-xs text-red-600 hover:text-red-800 py-1"
+                  className="mt-2 w-full text-xs text-[#9e2b25] hover:text-[#7a1e1a] py-1"
                 >
                   Eliminar proyecto
                 </button>
@@ -254,7 +254,7 @@ export function DashboardPage() {
 
         {projects.length === 0 && !loading && (
           <div className="text-center py-8">
-            <p className="text-sm text-gray-500">No hay proyectos aún</p>
+            <p className="text-sm text-[#3d5a4a]">No hay proyectos aún</p>
           </div>
         )}
       </div>
@@ -264,10 +264,10 @@ export function DashboardPage() {
         {selectedProject ? (
           <div className="space-y-8">
             <div>
-              <h1 className="text-3xl font-bold text-gray-900">
+              <h1 className="text-3xl font-bold text-[#1a2e23]">
                 {selectedProject.name}
               </h1>
-              <p className="text-gray-600 mt-2">
+              <p className="text-[#3d5a4a] mt-2">
                 {scans.length} escaneo{scans.length !== 1 ? 's' : ''} •{' '}
                 {latestScan
                   ? `Última actualización: ${new Date(latestScan.created_at).toLocaleDateString('es-ES')}`
@@ -279,7 +279,7 @@ export function DashboardPage() {
               <>
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                   <Card className="p-6">
-                    <h3 className="text-lg font-semibold text-gray-900 mb-4">
+                    <h3 className="text-lg font-semibold text-[#1a2e23] mb-4">
                       Evolución del Score de Salud
                     </h3>
                     <ResponsiveContainer width="100%" height={300}>
@@ -288,13 +288,13 @@ export function DashboardPage() {
                         <XAxis dataKey="date" />
                         <YAxis domain={[0, 100]} />
                         <Tooltip />
-                        <Line type="monotone" dataKey="score" stroke="#3b82f6" strokeWidth={2} name="Score" />
+                        <Line type="monotone" dataKey="score" stroke="#012d1d" strokeWidth={2} name="Score" />
                       </LineChart>
                     </ResponsiveContainer>
                   </Card>
 
                   <Card className="p-6">
-                    <h3 className="text-lg font-semibold text-gray-900 mb-4">
+                    <h3 className="text-lg font-semibold text-[#1a2e23] mb-4">
                       Valores Hardcodeados
                     </h3>
                     <ResponsiveContainer width="100%" height={300}>
@@ -304,16 +304,16 @@ export function DashboardPage() {
                         <YAxis />
                         <Tooltip />
                         <Legend />
-                        <Area type="monotone" dataKey="colores" stackId="1" stroke="#ef4444" fill="#fca5a5" />
-                        <Area type="monotone" dataKey="fuentes" stackId="1" stroke="#f59e0b" fill="#fcd34d" />
-                        <Area type="monotone" dataKey="spacing" stackId="1" stroke="#10b981" fill="#a7f3d0" />
-                        <Area type="monotone" dataKey="z-index" stackId="1" stroke="#8b5cf6" fill="#ddd6fe" />
+                        <Area type="monotone" dataKey="colores" stackId="1" stroke="#9e2b25" fill="rgba(158,43,37,0.2)" />
+                        <Area type="monotone" dataKey="fuentes" stackId="1" stroke="#a67c00" fill="rgba(166,124,0,0.2)" />
+                        <Area type="monotone" dataKey="spacing" stackId="1" stroke="#2a9d6e" fill="rgba(42,157,110,0.2)" />
+                        <Area type="monotone" dataKey="z-index" stackId="1" stroke="#5cc49a" fill="rgba(92,196,154,0.2)" />
                       </AreaChart>
                     </ResponsiveContainer>
                   </Card>
 
                   <Card className="p-6">
-                    <h3 className="text-lg font-semibold text-gray-900 mb-4">
+                    <h3 className="text-lg font-semibold text-[#1a2e23] mb-4">
                       Tendencia de Duplicados
                     </h3>
                     <ResponsiveContainer width="100%" height={300}>
@@ -323,15 +323,15 @@ export function DashboardPage() {
                         <YAxis />
                         <Tooltip />
                         <Legend />
-                        <Line type="monotone" dataKey="selectores" stroke="#3b82f6" strokeWidth={2} />
-                        <Line type="monotone" dataKey="declaraciones" stroke="#ec4899" strokeWidth={2} />
+                        <Line type="monotone" dataKey="selectores" stroke="#012d1d" strokeWidth={2} />
+                        <Line type="monotone" dataKey="declaraciones" stroke="#006c48" strokeWidth={2} />
                       </LineChart>
                     </ResponsiveContainer>
                   </Card>
 
                   {latestScanBreakdown.length > 0 && (
                     <Card className="p-6">
-                      <h3 className="text-lg font-semibold text-gray-900 mb-4">
+                      <h3 className="text-lg font-semibold text-[#1a2e23] mb-4">
                         Desglose del Último Escaneo
                       </h3>
                       <ResponsiveContainer width="100%" height={300}>
@@ -340,7 +340,7 @@ export function DashboardPage() {
                           <XAxis dataKey="name" />
                           <YAxis />
                           <Tooltip />
-                          <Bar dataKey="value" fill="#3b82f6" />
+                          <Bar dataKey="value" fill="#006c48" />
                         </BarChart>
                       </ResponsiveContainer>
                     </Card>
@@ -348,27 +348,27 @@ export function DashboardPage() {
                 </div>
 
                 <Card className="p-6">
-                  <h3 className="text-lg font-semibold text-gray-900 mb-4">
+                  <h3 className="text-lg font-semibold text-[#1a2e23] mb-4">
                     Escaneos
                   </h3>
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm">
                       <thead>
-                        <tr className="border-b border-gray-200">
-                          <th className="text-left py-3 px-4 font-semibold text-gray-700">Etiqueta</th>
-                          <th className="text-left py-3 px-4 font-semibold text-gray-700">Fecha</th>
-                          <th className="text-left py-3 px-4 font-semibold text-gray-700">Score</th>
-                          <th className="text-left py-3 px-4 font-semibold text-gray-700">Tamaño</th>
-                          <th className="text-left py-3 px-4 font-semibold text-gray-700">Selectores</th>
-                          <th className="text-left py-3 px-4 font-semibold text-gray-700">Declaraciones</th>
-                          <th className="text-left py-3 px-4 font-semibold text-gray-700">Acciones</th>
+                        <tr className="border-0 border-b-0">
+                          <th className="text-left py-3 px-4 font-semibold text-[#1a2e23]">Etiqueta</th>
+                          <th className="text-left py-3 px-4 font-semibold text-[#1a2e23]">Fecha</th>
+                          <th className="text-left py-3 px-4 font-semibold text-[#1a2e23]">Score</th>
+                          <th className="text-left py-3 px-4 font-semibold text-[#1a2e23]">Tamaño</th>
+                          <th className="text-left py-3 px-4 font-semibold text-[#1a2e23]">Selectores</th>
+                          <th className="text-left py-3 px-4 font-semibold text-[#1a2e23]">Declaraciones</th>
+                          <th className="text-left py-3 px-4 font-semibold text-[#1a2e23]">Acciones</th>
                         </tr>
                       </thead>
                       <tbody>
                         {scans.map((scan) => (
-                          <tr key={scan.id} className="border-b border-gray-100 hover:bg-gray-50">
-                            <td className="py-3 px-4">{scan.label}</td>
-                            <td className="py-3 px-4">
+                          <tr key={scan.id} className="border-0 hover:bg-[#f0f2f1]">
+                            <td className="py-3 px-4 text-[#1a2e23]">{scan.label}</td>
+                            <td className="py-3 px-4 text-[#1a2e23]">
                               {new Date(scan.created_at).toLocaleDateString('es-ES')}
                             </td>
                             <td className="py-3 px-4">
@@ -376,22 +376,22 @@ export function DashboardPage() {
                                 {scan.health_score}
                               </Badge>
                             </td>
-                            <td className="py-3 px-4">
+                            <td className="py-3 px-4 text-[#1a2e23]">
                               {(scan.file_size / 1024).toFixed(1)} KB
                             </td>
-                            <td className="py-3 px-4">{scan.total_selectors}</td>
-                            <td className="py-3 px-4">{scan.total_declarations}</td>
+                            <td className="py-3 px-4 text-[#1a2e23]">{scan.total_selectors}</td>
+                            <td className="py-3 px-4 text-[#1a2e23]">{scan.total_declarations}</td>
                             <td className="py-3 px-4">
                               <div className="flex gap-2">
                                 <button
                                   onClick={() => setSelectedScanId(scan.id)}
-                                  className="text-blue-600 hover:text-blue-800"
+                                  className="text-[#006c48] hover:text-[#004d35]"
                                 >
                                   <Eye size={16} />
                                 </button>
                                 <button
                                   onClick={() => handleDeleteScan(scan.id)}
-                                  className="text-red-600 hover:text-red-800"
+                                  className="text-[#9e2b25] hover:text-[#7a1e1a]"
                                 >
                                   <Trash2 size={16} />
                                 </button>
@@ -406,7 +406,7 @@ export function DashboardPage() {
               </>
             ) : (
               <Card className="p-12 text-center">
-                <p className="text-gray-500">
+                <p className="text-[#3d5a4a]">
                   No hay escaneos en este proyecto aún. Realiza un análisis en
                   la sección "Analizar" para comenzar.
                 </p>
@@ -415,7 +415,7 @@ export function DashboardPage() {
           </div>
         ) : (
           <div className="flex items-center justify-center py-24">
-            <p className="text-gray-500 text-lg">Crea un proyecto para comenzar</p>
+            <p className="text-[#3d5a4a] text-lg">Crea un proyecto para comenzar</p>
           </div>
         )}
       </div>
