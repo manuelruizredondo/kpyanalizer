@@ -30,7 +30,8 @@ export function useDesignSystem() {
     setError(null)
     setLoading(true)
     try {
-      const resp = await fetch(url)
+      const proxyUrl = `https://lqgdrkwabcjrnnthlrmi.supabase.co/functions/v1/cors-proxy?url=${encodeURIComponent(url)}`
+      const resp = await fetch(proxyUrl)
       if (!resp.ok) throw new Error(`Error ${resp.status}: ${resp.statusText}`)
       const content = await resp.text()
       const name = url.split('/').pop() || 'framework.css'

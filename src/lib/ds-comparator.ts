@@ -1,4 +1,4 @@
-import type { DsTokenSet, DsCoverageResult, DsCategoryResult, DsMismatch } from "@/types/design-system"
+import type { DsTokenSet, DsCoverageResult, DsCategoryResult, DsMismatch, DsRedundant } from "@/types/design-system"
 import type { HardcodedValue } from "@/types/analysis"
 
 export function compareDsTokens(
@@ -57,10 +57,19 @@ function compareCategory(
   const dsSet = new Set(dsValues.map(v => v.toLowerCase()))
   let matched = 0
   const mismatches: DsMismatch[] = []
+  const redundant: DsRedundant[] = []
 
   for (const val of unique) {
     if (dsSet.has(val)) {
       matched++
+      const hv = hardcoded.find(h => h.normalized === val)
+      if (hv) {
+        redundant.push({
+          value: val,
+          locations: hv.locations,
+          count: hv.count,
+        })
+      }
     } else {
       const closest = findClosest(val, dsValues, distanceFn)
       const hv = hardcoded.find(h => h.normalized === val)
@@ -78,6 +87,7 @@ function compareCategory(
     matchedToDs: matched,
     coverage: unique.length > 0 ? (matched / unique.length) * 100 : 100,
     mismatches,
+    redundant,
   }
 }
 
@@ -88,11 +98,17 @@ function compareCategoryNumeric(
   const dsSet = new Set(dsValues)
   let matched = 0
   const mismatches: DsMismatch[] = []
+  const redundant: DsRedundant[] = []
 
   for (const hv of values) {
     const num = parseInt(hv.normalized)
     if (dsSet.has(num)) {
       matched++
+      redundant.push({
+        value: hv.normalized,
+        locations: hv.locations,
+        count: hv.count,
+      })
     } else {
       const closest = dsValues.length > 0
         ? dsValues.reduce((a, b) => Math.abs(b - num) < Math.abs(a - num) ? b : a)
@@ -111,6 +127,7 @@ function compareCategoryNumeric(
     matchedToDs: matched,
     coverage: values.length > 0 ? (matched / values.length) * 100 : 100,
     mismatches,
+    redundant,
   }
 }
 

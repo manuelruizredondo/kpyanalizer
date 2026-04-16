@@ -8,8 +8,8 @@ import {
   Table, TableBody, TableCell, TableHead,
   TableHeader, TableRow
 } from "@/components/ui/table"
-import { Palette, Type, Ruler, Layers, Upload, Link, Loader2, X } from "lucide-react"
-import type { DsTokenSet, DsCoverageResult, DsCategoryResult } from "@/types/design-system"
+import { Palette, Type, Ruler, Layers, Upload, Link, Loader2, X, AlertTriangle } from "lucide-react"
+import type { DsTokenSet, DsCoverageResult, DsCategoryResult, DsRedundant } from "@/types/design-system"
 import type { AnalysisResult } from "@/types/analysis"
 
 interface DesignSystemTabProps {
@@ -164,7 +164,38 @@ export function DesignSystemTab({
             <CategoryCard icon={Layers} label="Z-index" category={coverage.zIndex} />
           </div>
 
-          {/* Mismatches Detail */}
+          {/* ── Redundant: values already in the framework ── */}
+          {(coverage.colors.redundant.length > 0 ||
+            coverage.fontSizes.redundant.length > 0 ||
+            coverage.spacing.redundant.length > 0 ||
+            coverage.zIndex.redundant.length > 0) && (
+            <div className="space-y-4">
+              <div>
+                <h4 className="text-sm font-semibold text-[#9e2b25] flex items-center gap-2">
+                  <AlertTriangle size={16} />
+                  Valores redundantes — ya existen en el framework
+                </h4>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Estos valores ya estan definidos en HolyGrail5. Puedes eliminarlos de tu CSS y usar las clases/variables del framework.
+                </p>
+              </div>
+
+              {coverage.colors.redundant.length > 0 && (
+                <RedundantSection label="Colores redundantes" items={coverage.colors.redundant} isColor />
+              )}
+              {coverage.fontSizes.redundant.length > 0 && (
+                <RedundantSection label="Font-sizes redundantes" items={coverage.fontSizes.redundant} />
+              )}
+              {coverage.spacing.redundant.length > 0 && (
+                <RedundantSection label="Spacing redundante" items={coverage.spacing.redundant} />
+              )}
+              {coverage.zIndex.redundant.length > 0 && (
+                <RedundantSection label="Z-index redundante" items={coverage.zIndex.redundant} />
+              )}
+            </div>
+          )}
+
+          {/* ── Mismatches: values NOT in the framework ── */}
           {coverage.colors.mismatches.length > 0 && (
             <MismatchSection label="Colores fuera del DS" mismatches={coverage.colors.mismatches} isColor />
           )}
@@ -215,6 +246,60 @@ function CategoryCard({ icon: Icon, label, category }: {
             {category.mismatches.length} valores fuera del DS
           </p>
         )}
+      </CardContent>
+    </Card>
+  )
+}
+
+function RedundantSection({ label, items, isColor = false }: {
+  label: string
+  items: DsRedundant[]
+  isColor?: boolean
+}) {
+  const sorted = [...items].sort((a, b) => b.count - a.count)
+
+  return (
+    <Card className="border-[#fef2f1]">
+      <CardContent className="p-4">
+        <h5 className="text-sm font-semibold text-[#9e2b25] mb-3">{label} ({items.length})</h5>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              {isColor && <TableHead className="w-10"></TableHead>}
+              <TableHead>Valor</TableHead>
+              <TableHead>Apariciones</TableHead>
+              <TableHead>Ubicaciones</TableHead>
+              <TableHead>Accion</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {sorted.map((item, i) => (
+              <TableRow key={i} className="bg-[#fef2f1]/30">
+                {isColor && (
+                  <TableCell>
+                    <div
+                      className="w-6 h-6 rounded border"
+                      style={{ backgroundColor: item.value }}
+                    />
+                  </TableCell>
+                )}
+                <TableCell className="font-mono text-xs font-medium">{item.value}</TableCell>
+                <TableCell>
+                  <Badge variant="secondary" className="text-xs">
+                    {item.count}x
+                  </Badge>
+                </TableCell>
+                <TableCell className="text-xs text-muted-foreground">
+                  {item.locations.slice(0, 4).map(l => `L${l.line}`).join(", ")}
+                  {item.locations.length > 4 && ` (+${item.locations.length - 4})`}
+                </TableCell>
+                <TableCell>
+                  <span className="text-xs text-[#9e2b25] font-medium">Eliminar del CSS</span>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
       </CardContent>
     </Card>
   )

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useAuth } from '@/contexts/AuthContext'
 import {
   getProjects,
@@ -13,6 +13,10 @@ import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { ScanDetailModal } from './ScanDetailModal'
+import { parseDsTokens } from '@/lib/ds-token-parser'
+import { compareDsTokens } from '@/lib/ds-comparator'
+import type { DsTokenSet, DsCoverageResult as FullDsCoverage } from '@/types/design-system'
+import type { AnalysisResult } from '@/types/analysis'
 import {
   LineChart,
   Line,
@@ -46,7 +50,12 @@ import {
   Type,
   Space,
   TrendingUp,
+  Loader2,
+  RefreshCw,
 } from 'lucide-react'
+
+const HG5_URL = 'https://hg5.netlify.app/output.css'
+const CORS_PROXY = 'https://lqgdrkwabcjrnnthlrmi.supabase.co/functions/v1/cors-proxy'
 
 // ─── Metric Card ───────────────────────────────────────────────────
 function MetricCard({
@@ -155,11 +164,19 @@ export function DashboardPage() {
   const [scans, setScans] = useState<Scan[]>([])
   const [latestDetail, setLatestDetail] = useState<ScanDetail | null>(null)
   const [loading, setLoading] = useState(true)
+  const [scansLoading, setScansLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [showNewProjectForm, setShowNewProjectForm] = useState(false)
   const [newProjectName, setNewProjectName] = useState('')
   const [newProjectDescription, setNewProjectDescription] = useState('')
   const [selectedScanId, setSelectedScanId] = useState<string | null>(null)
+
+  // ── HG5 live comparison state ──
+  const [hg5Tokens, setHg5Tokens] = useState<DsTokenSet | null>(null)
+  const [hg5Coverage, setHg5Coverage] = useState<FullDsCoverage | null>(null)
+  const [hg5Loading, setHg5Loading] = useState(false)
+  const [hg5Error, setHg5Error] = useState<string | null>(null)
+  const hg5FetchedRef = useRef(false)
 
   // ── Load projects ──
   useEffect(() => {
@@ -195,18 +212,60 @@ export function DashboardPage() {
 
   const loadScans = async (projectId: string) => {
     try {
-      const scansList = await getProjectScans(projectId)
+      setScansLoading(true)
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Tiempo de espera agotado al cargar escaneos.')), 15000)
+      )
+      const scansList = await Promise.race([getProjectScans(projectId), timeoutPromise])
       setScans(scansList)
       if (scansList.length > 0) {
-        const detail = await getLatestScanDetail(projectId)
+        const detail = await Promise.race([getLatestScanDetail(projectId), timeoutPromise])
         setLatestDetail(detail)
       } else {
         setLatestDetail(null)
       }
-    } catch (error) {
-      console.error('Error loading scans:', error)
+    } catch (err) {
+      console.error('Error loading scans:', err)
+      setScans([])
+      setLatestDetail(null)
+    } finally {
+      setScansLoading(false)
     }
   }
+
+  // ── Fetch HG5 tokens and compare against latest analysis ──
+  const fetchHg5Comparison = async (analysisData: AnalysisResult) => {
+    setHg5Loading(true)
+    setHg5Error(null)
+    try {
+      const proxyUrl = `${CORS_PROXY}?url=${encodeURIComponent(HG5_URL)}`
+      const resp = await fetch(proxyUrl)
+      if (!resp.ok) throw new Error(`Error ${resp.status}`)
+      const css = await resp.text()
+      const tokens = parseDsTokens(css, 'output.css')
+      setHg5Tokens(tokens)
+      const coverage = compareDsTokens(
+        analysisData.colors,
+        analysisData.fontSizes,
+        analysisData.spacingValues,
+        analysisData.zIndexValues,
+        tokens
+      )
+      setHg5Coverage(coverage)
+    } catch (e) {
+      setHg5Error(e instanceof Error ? e.message : 'Error al cargar HolyGrail5')
+    } finally {
+      setHg5Loading(false)
+    }
+  }
+
+  // ── Auto-fetch HG5 when latest detail is available ──
+  useEffect(() => {
+    if (latestDetail?.analysis_data && !hg5FetchedRef.current) {
+      hg5FetchedRef.current = true
+      fetchHg5Comparison(latestDetail.analysis_data)
+    }
+  }, [latestDetail])
 
   // ── Handlers ──
   const handleCreateProject = async () => {
@@ -411,7 +470,12 @@ export function DashboardPage() {
 
       {/* ─── Main Content ─── */}
       <div className="flex-1 min-w-0 p-8 space-y-8">
-        {selectedProject ? (
+        {scansLoading ? (
+          <div className="flex items-center justify-center py-24 gap-3">
+            <Loader2 className="animate-spin text-[#006c48]" size={24} />
+            <p className="text-[#3d5a4a]">Cargando escaneos...</p>
+          </div>
+        ) : selectedProject ? (
           scans.length > 0 && latestScan ? (
             <>
               {/* ── Header ── */}
@@ -576,6 +640,233 @@ export function DashboardPage() {
                     </p>
                   )}
                 </Card>
+              </div>
+
+              {/* ══════════════════════════════════════════════════════════════
+                   SECTION 2b — HolyGrail5 Live Comparison
+                 ══════════════════════════════════════════════════════════════ */}
+              <div>
+                <div className="flex items-center justify-between mb-4">
+                  <div>
+                    <h2 className="text-lg font-semibold text-[#1a2e23]">Comparativa con HolyGrail5</h2>
+                    <p className="text-sm text-[#3d5a4a]">Cruce en tiempo real de tu CSS con el framework HG5</p>
+                  </div>
+                  {!hg5Loading && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="gap-2"
+                      onClick={() => {
+                        hg5FetchedRef.current = false
+                        if (latestDetail?.analysis_data) fetchHg5Comparison(latestDetail.analysis_data)
+                      }}
+                    >
+                      <RefreshCw size={14} />
+                      Recargar
+                    </Button>
+                  )}
+                </div>
+
+                {hg5Loading ? (
+                  <Card className="p-8 flex items-center justify-center gap-3">
+                    <Loader2 className="animate-spin text-[#006c48]" size={20} />
+                    <p className="text-sm text-[#3d5a4a]">Cargando CSS de HolyGrail5...</p>
+                  </Card>
+                ) : hg5Error ? (
+                  <Card className="p-6">
+                    <p className="text-sm text-[#9e2b25]">Error al cargar HG5: {hg5Error}</p>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="mt-3"
+                      onClick={() => {
+                        hg5FetchedRef.current = false
+                        if (latestDetail?.analysis_data) fetchHg5Comparison(latestDetail.analysis_data)
+                      }}
+                    >
+                      Reintentar
+                    </Button>
+                  </Card>
+                ) : hg5Coverage && hg5Tokens ? (
+                  <div className="space-y-4">
+                    {/* HG5 overview cards */}
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-3">
+                      <Card className="p-4 col-span-1">
+                        <p className="text-xs text-[#3d5a4a] mb-1">Cobertura HG5</p>
+                        <p className="text-3xl font-bold" style={{ color: hg5Coverage.overallCoverage >= 50 ? '#006c48' : '#9e2b25' }}>
+                          {hg5Coverage.overallCoverage.toFixed(0)}%
+                        </p>
+                        <p className="text-xs text-[#3d5a4a] mt-1">de tus valores ya estan en HG5</p>
+                      </Card>
+                      <Card className="p-4">
+                        <div className="flex items-center gap-2 mb-1">
+                          <Palette size={14} className="text-[#006c48]" />
+                          <p className="text-xs text-[#3d5a4a]">Colores</p>
+                        </div>
+                        <p className="text-xl font-bold text-[#1a2e23]">{hg5Coverage.colors.matchedToDs}/{hg5Coverage.colors.totalUsed}</p>
+                        <div className="flex items-center gap-2 mt-1">
+                          <div className="flex-1 h-1.5 bg-[#f0f2f1] rounded-full overflow-hidden">
+                            <div className="h-full rounded-full bg-[#006c48]" style={{ width: `${hg5Coverage.colors.coverage}%` }} />
+                          </div>
+                          <span className="text-xs font-medium text-[#3d5a4a]">{hg5Coverage.colors.coverage.toFixed(0)}%</span>
+                        </div>
+                        {hg5Coverage.colors.redundant.length > 0 && (
+                          <p className="text-xs text-[#9e2b25] mt-1">{hg5Coverage.colors.redundant.length} redundantes</p>
+                        )}
+                      </Card>
+                      <Card className="p-4">
+                        <div className="flex items-center gap-2 mb-1">
+                          <Type size={14} className="text-[#2a9d6e]" />
+                          <p className="text-xs text-[#3d5a4a]">Font Sizes</p>
+                        </div>
+                        <p className="text-xl font-bold text-[#1a2e23]">{hg5Coverage.fontSizes.matchedToDs}/{hg5Coverage.fontSizes.totalUsed}</p>
+                        <div className="flex items-center gap-2 mt-1">
+                          <div className="flex-1 h-1.5 bg-[#f0f2f1] rounded-full overflow-hidden">
+                            <div className="h-full rounded-full bg-[#2a9d6e]" style={{ width: `${hg5Coverage.fontSizes.coverage}%` }} />
+                          </div>
+                          <span className="text-xs font-medium text-[#3d5a4a]">{hg5Coverage.fontSizes.coverage.toFixed(0)}%</span>
+                        </div>
+                        {hg5Coverage.fontSizes.redundant.length > 0 && (
+                          <p className="text-xs text-[#9e2b25] mt-1">{hg5Coverage.fontSizes.redundant.length} redundantes</p>
+                        )}
+                      </Card>
+                      <Card className="p-4">
+                        <div className="flex items-center gap-2 mb-1">
+                          <Ruler size={14} className="text-[#5cc49a]" />
+                          <p className="text-xs text-[#3d5a4a]">Spacing</p>
+                        </div>
+                        <p className="text-xl font-bold text-[#1a2e23]">{hg5Coverage.spacing.matchedToDs}/{hg5Coverage.spacing.totalUsed}</p>
+                        <div className="flex items-center gap-2 mt-1">
+                          <div className="flex-1 h-1.5 bg-[#f0f2f1] rounded-full overflow-hidden">
+                            <div className="h-full rounded-full bg-[#5cc49a]" style={{ width: `${hg5Coverage.spacing.coverage}%` }} />
+                          </div>
+                          <span className="text-xs font-medium text-[#3d5a4a]">{hg5Coverage.spacing.coverage.toFixed(0)}%</span>
+                        </div>
+                        {hg5Coverage.spacing.redundant.length > 0 && (
+                          <p className="text-xs text-[#9e2b25] mt-1">{hg5Coverage.spacing.redundant.length} redundantes</p>
+                        )}
+                      </Card>
+                      <Card className="p-4">
+                        <div className="flex items-center gap-2 mb-1">
+                          <Layers size={14} className="text-[#a67c00]" />
+                          <p className="text-xs text-[#3d5a4a]">Z-index</p>
+                        </div>
+                        <p className="text-xl font-bold text-[#1a2e23]">{hg5Coverage.zIndex.matchedToDs}/{hg5Coverage.zIndex.totalUsed}</p>
+                        <div className="flex items-center gap-2 mt-1">
+                          <div className="flex-1 h-1.5 bg-[#f0f2f1] rounded-full overflow-hidden">
+                            <div className="h-full rounded-full bg-[#a67c00]" style={{ width: `${hg5Coverage.zIndex.coverage}%` }} />
+                          </div>
+                          <span className="text-xs font-medium text-[#3d5a4a]">{hg5Coverage.zIndex.coverage.toFixed(0)}%</span>
+                        </div>
+                        {hg5Coverage.zIndex.redundant.length > 0 && (
+                          <p className="text-xs text-[#9e2b25] mt-1">{hg5Coverage.zIndex.redundant.length} redundantes</p>
+                        )}
+                      </Card>
+                    </div>
+
+                    {/* HG5 Redundant values detail */}
+                    {(hg5Coverage.colors.redundant.length > 0 || hg5Coverage.fontSizes.redundant.length > 0 || hg5Coverage.spacing.redundant.length > 0) && (
+                      <Card className="p-6 border-[#fef2f1]">
+                        <div className="flex items-center gap-2 mb-1">
+                          <AlertTriangle size={16} className="text-[#9e2b25]" />
+                          <h3 className="text-sm font-semibold text-[#9e2b25]">
+                            Valores redundantes — ya existen en HolyGrail5
+                          </h3>
+                        </div>
+                        <p className="text-xs text-[#3d5a4a] mb-4">
+                          Puedes eliminarlos de tu CSS y usar las clases/variables del framework.
+                        </p>
+                        <div className="space-y-4">
+                          {hg5Coverage.colors.redundant.length > 0 && (
+                            <div>
+                              <h4 className="text-xs font-semibold text-[#1a2e23] mb-2">
+                                Colores redundantes ({hg5Coverage.colors.redundant.length})
+                              </h4>
+                              <div className="flex flex-wrap gap-2">
+                                {hg5Coverage.colors.redundant.sort((a,b) => b.count - a.count).map((item, i) => (
+                                  <div key={i} className="flex items-center gap-1.5 bg-[#fef2f1] rounded-lg px-2.5 py-1.5">
+                                    <div className="w-4 h-4 rounded border shrink-0" style={{ backgroundColor: item.value }} />
+                                    <span className="text-xs font-mono">{item.value}</span>
+                                    <Badge variant="secondary" className="text-[10px] px-1.5 py-0">{item.count}x</Badge>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          {hg5Coverage.fontSizes.redundant.length > 0 && (
+                            <div>
+                              <h4 className="text-xs font-semibold text-[#1a2e23] mb-2">
+                                Font-sizes redundantes ({hg5Coverage.fontSizes.redundant.length})
+                              </h4>
+                              <div className="flex flex-wrap gap-2">
+                                {hg5Coverage.fontSizes.redundant.sort((a,b) => b.count - a.count).map((item, i) => (
+                                  <div key={i} className="bg-[#fef2f1] rounded-lg px-2.5 py-1.5">
+                                    <span className="text-xs font-mono">{item.value}</span>
+                                    <Badge variant="secondary" className="text-[10px] px-1.5 py-0 ml-1.5">{item.count}x</Badge>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          {hg5Coverage.spacing.redundant.length > 0 && (
+                            <div>
+                              <h4 className="text-xs font-semibold text-[#1a2e23] mb-2">
+                                Spacing redundante ({hg5Coverage.spacing.redundant.length})
+                              </h4>
+                              <div className="flex flex-wrap gap-2">
+                                {hg5Coverage.spacing.redundant.sort((a,b) => b.count - a.count).map((item, i) => (
+                                  <div key={i} className="bg-[#fef2f1] rounded-lg px-2.5 py-1.5">
+                                    <span className="text-xs font-mono">{item.value}</span>
+                                    <Badge variant="secondary" className="text-[10px] px-1.5 py-0 ml-1.5">{item.count}x</Badge>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </Card>
+                    )}
+
+                    {/* HG5 Mismatches - values NOT in framework */}
+                    {hg5Coverage.colors.mismatches.length > 0 && (
+                      <Card className="p-6">
+                        <h3 className="text-sm font-semibold text-[#1a2e23] mb-1">
+                          Colores fuera de HG5 ({hg5Coverage.colors.mismatches.length})
+                        </h3>
+                        <p className="text-xs text-[#3d5a4a] mb-3">
+                          Estos colores no existen en HolyGrail5. Se sugiere el token HG5 mas cercano.
+                        </p>
+                        <div className="flex flex-wrap gap-2">
+                          {hg5Coverage.colors.mismatches.slice(0, 20).map((m, i) => (
+                            <div key={i} className="flex items-center gap-1.5 bg-[#f8f9fa] rounded-lg px-2.5 py-1.5">
+                              <div className="w-4 h-4 rounded border shrink-0" style={{ backgroundColor: m.value }} />
+                              <span className="text-xs font-mono">{m.value}</span>
+                              {m.closestDsValue && (
+                                <>
+                                  <span className="text-[10px] text-[#3d5a4a]">→</span>
+                                  <div className="w-3 h-3 rounded border shrink-0" style={{ backgroundColor: m.closestDsValue }} />
+                                  <span className="text-[10px] font-mono text-[#006c48]">{m.closestDsValue}</span>
+                                </>
+                              )}
+                            </div>
+                          ))}
+                          {hg5Coverage.colors.mismatches.length > 20 && (
+                            <span className="text-xs text-[#3d5a4a] self-center">
+                              +{hg5Coverage.colors.mismatches.length - 20} mas
+                            </span>
+                          )}
+                        </div>
+                      </Card>
+                    )}
+
+                    {/* HG5 Tokens Summary */}
+                    <Card className="p-4 bg-[#f8f9fa]">
+                      <p className="text-xs text-[#3d5a4a]">
+                        <strong>HolyGrail5</strong> contiene {hg5Tokens.colors.length} colores, {hg5Tokens.fontSizes.length} font-sizes, {hg5Tokens.spacing.length} espaciados y {hg5Tokens.zIndex.length} z-index definidos como tokens.
+                      </p>
+                    </Card>
+                  </div>
+                ) : null}
               </div>
 
               {/* ══════════════════════════════════════════════════════════════

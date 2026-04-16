@@ -14,11 +14,18 @@ export interface DsMismatch {
   locations: LocationReference[]
 }
 
+export interface DsRedundant {
+  value: string
+  locations: LocationReference[]
+  count: number
+}
+
 export interface DsCategoryResult {
   totalUsed: number
   matchedToDs: number
   coverage: number
   mismatches: DsMismatch[]
+  redundant: DsRedundant[]
 }
 
 export interface DsCoverageResult {
