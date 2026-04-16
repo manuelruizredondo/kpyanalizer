@@ -4,7 +4,7 @@ import { useAuth } from '@/contexts/AuthContext'
 import { LoginPage } from '@/components/auth/LoginPage'
 import { AppLayout } from '@/components/layout/AppLayout'
 import { DashboardPage } from '@/components/dashboard/DashboardPage'
-import { saveScan, getProjects } from '@/lib/scan-storage'
+import { saveScan, getProjects, createProject } from '@/lib/scan-storage'
 import type { Project } from '@/lib/scan-storage'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Card } from '@/components/ui/card'
@@ -26,6 +26,7 @@ import {
   Component,
   Code,
   Save,
+  Plus,
 } from 'lucide-react'
 
 function AnalyzePage() {
@@ -34,6 +35,8 @@ function AnalyzePage() {
   const ds = useDesignSystem()
   const [showSaveForm, setShowSaveForm] = useState(false)
   const [projects, setProjects] = useState<Project[]>([])
+  const [creatingProject, setCreatingProject] = useState(false)
+  const [newProjectName, setNewProjectName] = useState('')
   const [saveFormData, setSaveFormData] = useState({
     projectId: '',
     label: '',
@@ -169,20 +172,70 @@ function AnalyzePage() {
               <label className="block text-sm font-medium text-[#1a2e23] mb-1">
                 Proyecto
               </label>
-              <select
-                value={saveFormData.projectId}
-                onChange={(e) =>
-                  setSaveFormData({ ...saveFormData, projectId: e.target.value })
-                }
-                className="w-full px-3 py-2 bg-white rounded-xl border-0 text-sm focus:outline-none focus:ring-2 focus:ring-[#006c48]"
-              >
-                <option value="">Selecciona un proyecto</option>
-                {projects.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
-                  </option>
-                ))}
-              </select>
+              {creatingProject ? (
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={newProjectName}
+                    onChange={(e) => setNewProjectName(e.target.value)}
+                    placeholder="Nombre del nuevo proyecto"
+                    className="flex-1 px-3 py-2 bg-white rounded-xl border-0 text-sm focus:outline-none focus:ring-2 focus:ring-[#006c48]"
+                    autoFocus
+                  />
+                  <Button
+                    size="sm"
+                    onClick={async () => {
+                      if (!newProjectName.trim()) return
+                      try {
+                        const newId = await createProject(newProjectName.trim())
+                        const refreshed = await getProjects()
+                        setProjects(refreshed)
+                        setSaveFormData({ ...saveFormData, projectId: newId })
+                        setCreatingProject(false)
+                        setNewProjectName('')
+                      } catch (err) {
+                        console.error('Error creating project:', err)
+                        setSavingStatus({ state: 'error', message: 'Error al crear proyecto' })
+                      }
+                    }}
+                    className="bg-[#006c48] hover:bg-[#005a3a] text-white"
+                  >
+                    Crear
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => { setCreatingProject(false); setNewProjectName('') }}
+                  >
+                    Cancelar
+                  </Button>
+                </div>
+              ) : (
+                <div className="flex gap-2">
+                  <select
+                    value={saveFormData.projectId}
+                    onChange={(e) =>
+                      setSaveFormData({ ...saveFormData, projectId: e.target.value })
+                    }
+                    className="flex-1 px-3 py-2 bg-white rounded-xl border-0 text-sm focus:outline-none focus:ring-2 focus:ring-[#006c48]"
+                  >
+                    <option value="">Selecciona un proyecto</option>
+                    {projects.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}
+                      </option>
+                    ))}
+                  </select>
+                  <Button
+                    size="sm"
+                    onClick={() => setCreatingProject(true)}
+                    className="gap-1 bg-[#006c48] hover:bg-[#005a3a] text-white"
+                  >
+                    <Plus size={14} />
+                    Nuevo
+                  </Button>
+                </div>
+              )}
             </div>
 
             <div>

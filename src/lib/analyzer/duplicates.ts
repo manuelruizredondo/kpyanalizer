@@ -10,6 +10,9 @@ export interface DuplicateResults {
   uniqueDeclarations: number
 }
 
+// Selectors to exclude from duplicate detection (common structural selectors)
+const IGNORED_SELECTORS = new Set([':root', '*', 'html', 'body'])
+
 export function extractDuplicates(ast: CssNode): DuplicateResults {
   const selectorMap = new Map<string, { line: number; column: number; selector: string }[]>()
   const declarationMap = new Map<string, { line: number; column: number; selector: string; property: string }[]>()
@@ -18,19 +21,32 @@ export function extractDuplicates(ast: CssNode): DuplicateResults {
   const uniqueDecls = new Set<string>()
 
   let currentSelector = ""
+  let insideKeyframes = false
 
   csstree.walk(ast, {
     enter(node: import("css-tree").CssNode) {
+      // Track when we enter a @keyframes block
+      if (node.type === "Atrule") {
+        const name = node.name.toLowerCase()
+        if (name === "keyframes" || name === "-webkit-keyframes") {
+          insideKeyframes = true
+        }
+      }
+
       if (node.type === "Rule" && node.prelude) {
         currentSelector = csstree.generate(node.prelude)
-        const line = node.loc?.start?.line ?? 0
-        const column = node.loc?.start?.column ?? 0
 
-        const existing = selectorMap.get(currentSelector)
-        if (existing) {
-          existing.push({ line, column, selector: currentSelector })
-        } else {
-          selectorMap.set(currentSelector, [{ line, column, selector: currentSelector }])
+        // Skip keyframe stops (to, from, 0%, 50%, 100%, etc.) and ignored selectors
+        if (!insideKeyframes && !IGNORED_SELECTORS.has(currentSelector)) {
+          const line = node.loc?.start?.line ?? 0
+          const column = node.loc?.start?.column ?? 0
+
+          const existing = selectorMap.get(currentSelector)
+          if (existing) {
+            existing.push({ line, column, selector: currentSelector })
+          } else {
+            selectorMap.set(currentSelector, [{ line, column, selector: currentSelector }])
+          }
         }
       }
 
@@ -66,6 +82,15 @@ export function extractDuplicates(ast: CssNode): DuplicateResults {
             name: kfName,
             line: node.loc?.start?.line ?? 0,
           })
+        }
+      }
+    },
+    leave(node: import("css-tree").CssNode) {
+      // Reset flag when leaving a @keyframes block
+      if (node.type === "Atrule") {
+        const name = node.name.toLowerCase()
+        if (name === "keyframes" || name === "-webkit-keyframes") {
+          insideKeyframes = false
         }
       }
     },
