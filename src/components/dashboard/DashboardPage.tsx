@@ -4,10 +4,11 @@ import {
   getProjects,
   createProject,
   getProjectScans,
+  getLatestScanDetail,
   deleteScan,
   deleteProject,
 } from '@/lib/scan-storage'
-import type { Project, Scan } from '@/lib/scan-storage'
+import type { Project, Scan, ScanDetail } from '@/lib/scan-storage'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -26,13 +27,133 @@ import {
   ResponsiveContainer,
   Legend,
 } from 'recharts'
-import { Trash2, Eye } from 'lucide-react'
+import {
+  Trash2,
+  Eye,
+  FileText,
+  Ruler,
+  Hash,
+  AtSign,
+  AlertTriangle,
+  Variable,
+  Layers,
+  FileCode,
+  Copy,
+  Recycle,
+  Activity,
+  ShieldCheck,
+  Palette,
+  Type,
+  Space,
+  TrendingUp,
+} from 'lucide-react'
 
+// ─── Metric Card ───────────────────────────────────────────────────
+function MetricCard({
+  icon: Icon,
+  label,
+  value,
+  unit,
+  color = '#006c48',
+  delta,
+  invertDelta = false,
+}: {
+  icon: React.ElementType
+  label: string
+  value: string | number
+  unit?: string
+  color?: string
+  delta?: number | null
+  invertDelta?: boolean // true = lower is better (e.g. !important count)
+}) {
+  const showDelta = delta !== undefined && delta !== null && delta !== 0
+  const isPositive = invertDelta ? delta! < 0 : delta! > 0
+
+  return (
+    <Card className="p-4 flex items-center gap-3">
+      <div
+        className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0"
+        style={{ backgroundColor: `${color}15` }}
+      >
+        <Icon size={20} style={{ color }} />
+      </div>
+      <div className="min-w-0 flex-1">
+        <p className="text-xs text-[#3d5a4a] truncate">{label}</p>
+        <div className="flex items-baseline gap-2">
+          <p className="text-lg font-bold text-[#1a2e23] leading-tight">
+            {value}
+            {unit && <span className="text-sm font-normal text-[#3d5a4a] ml-0.5">{unit}</span>}
+          </p>
+          {showDelta && (
+            <span className={`text-xs font-semibold flex items-center gap-0.5 ${isPositive ? 'text-[#006c48]' : 'text-[#9e2b25]'}`}>
+              {isPositive ? '\u25B2' : '\u25BC'}
+              {Math.abs(delta!).toLocaleString()}
+            </span>
+          )}
+        </div>
+      </div>
+    </Card>
+  )
+}
+
+// ─── Score Ring ─────────────────────────────────────────────────────
+function ScoreRing({ score, size = 120 }: { score: number; size?: number }) {
+  const radius = (size - 12) / 2
+  const circumference = 2 * Math.PI * radius
+  const progress = (score / 100) * circumference
+  const color = score >= 70 ? '#006c48' : score >= 40 ? '#a67c00' : '#9e2b25'
+
+  return (
+    <div className="relative" style={{ width: size, height: size }}>
+      <svg width={size} height={size} className="-rotate-90">
+        <circle cx={size / 2} cy={size / 2} r={radius} fill="none" stroke="#f0f2f1" strokeWidth={10} />
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          fill="none"
+          stroke={color}
+          strokeWidth={10}
+          strokeDasharray={circumference}
+          strokeDashoffset={circumference - progress}
+          strokeLinecap="round"
+        />
+      </svg>
+      <div className="absolute inset-0 flex flex-col items-center justify-center">
+        <span className="text-3xl font-bold" style={{ color }}>
+          {score}
+        </span>
+        <span className="text-xs text-[#3d5a4a]">/ 100</span>
+      </div>
+    </div>
+  )
+}
+
+// ─── Coverage Bar ──────────────────────────────────────────────────
+function CoverageBar({ label, value, color }: { label: string; value: number; color: string }) {
+  return (
+    <div className="space-y-1">
+      <div className="flex justify-between text-sm">
+        <span className="text-[#3d5a4a]">{label}</span>
+        <span className="font-semibold text-[#1a2e23]">{value.toFixed(0)}%</span>
+      </div>
+      <div className="h-2 bg-[#f0f2f1] rounded-full overflow-hidden">
+        <div
+          className="h-full rounded-full transition-all"
+          style={{ width: `${Math.min(value, 100)}%`, backgroundColor: color }}
+        />
+      </div>
+    </div>
+  )
+}
+
+// ─── Main Component ─────────────────────────────────────────────────
 export function DashboardPage() {
   const { profile } = useAuth()
   const [projects, setProjects] = useState<Project[]>([])
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
   const [scans, setScans] = useState<Scan[]>([])
+  const [latestDetail, setLatestDetail] = useState<ScanDetail | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [showNewProjectForm, setShowNewProjectForm] = useState(false)
@@ -40,6 +161,7 @@ export function DashboardPage() {
   const [newProjectDescription, setNewProjectDescription] = useState('')
   const [selectedScanId, setSelectedScanId] = useState<string | null>(null)
 
+  // ── Load projects ──
   useEffect(() => {
     loadProjects()
   }, [])
@@ -48,25 +170,23 @@ export function DashboardPage() {
     try {
       setLoading(true)
       setError(null)
-
-      // Timeout de seguridad: si la query tarda más de 15s, abortar
       const timeoutPromise = new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error('La conexión tardó demasiado. Verifica tu conexión a internet.')), 15000)
       )
       const projectsList = await Promise.race([getProjects(), timeoutPromise])
-
       setProjects(projectsList)
       if (projectsList.length > 0 && !selectedProjectId) {
         setSelectedProjectId(projectsList[0].id)
       }
     } catch (err) {
       console.error('Error loading projects:', err)
-      setError(err instanceof Error ? err.message : 'Error al cargar los proyectos. Intenta recargar la página.')
+      setError(err instanceof Error ? err.message : 'Error al cargar los proyectos.')
     } finally {
       setLoading(false)
     }
   }
 
+  // ── Load scans + latest detail ──
   useEffect(() => {
     if (selectedProjectId) {
       loadScans(selectedProjectId)
@@ -77,14 +197,20 @@ export function DashboardPage() {
     try {
       const scansList = await getProjectScans(projectId)
       setScans(scansList)
+      if (scansList.length > 0) {
+        const detail = await getLatestScanDetail(projectId)
+        setLatestDetail(detail)
+      } else {
+        setLatestDetail(null)
+      }
     } catch (error) {
       console.error('Error loading scans:', error)
     }
   }
 
+  // ── Handlers ──
   const handleCreateProject = async () => {
     if (!newProjectName.trim()) return
-
     try {
       const newProjectId = await createProject(newProjectName, newProjectDescription || undefined)
       await loadProjects()
@@ -99,21 +225,16 @@ export function DashboardPage() {
 
   const handleDeleteScan = async (scanId: string) => {
     if (!window.confirm('¿Deseas eliminar este escaneo?')) return
-
     try {
       await deleteScan(scanId)
-      if (selectedProjectId) {
-        await loadScans(selectedProjectId)
-      }
+      if (selectedProjectId) await loadScans(selectedProjectId)
     } catch (error) {
       console.error('Error deleting scan:', error)
     }
   }
 
   const handleDeleteProject = async (projectId: string) => {
-    if (!window.confirm('¿Deseas eliminar este proyecto y todos sus escaneos?'))
-      return
-
+    if (!window.confirm('¿Deseas eliminar este proyecto y todos sus escaneos?')) return
     try {
       await deleteProject(projectId)
       const updated = projects.filter((p) => p.id !== projectId)
@@ -121,13 +242,18 @@ export function DashboardPage() {
       if (selectedProjectId === projectId) {
         setSelectedProjectId(updated.length > 0 ? updated[0].id : null)
         setScans([])
+        setLatestDetail(null)
       }
     } catch (error) {
       console.error('Error deleting project:', error)
     }
   }
 
+  // ── Derived data ──
   const selectedProject = projects.find((p) => p.id === selectedProjectId)
+  const latestScan = scans.length > 0 ? scans[0] : null
+  const previousScan = scans.length > 1 ? scans[1] : null
+  const chronologicalScans = [...scans].reverse()
 
   const getHealthScoreBadgeColor = (score: number) => {
     if (score >= 70) return 'bg-[#e0f5ec] text-[#006c48]'
@@ -135,37 +261,53 @@ export function DashboardPage() {
     return 'bg-[#fef2f1] text-[#9e2b25]'
   }
 
-  // Charts data - use scans in chronological order (oldest first)
-  const chronologicalScans = [...scans].reverse()
+  const getDelta = (current: number, previous: number | undefined) => {
+    if (previous === undefined) return null
+    const diff = current - previous
+    if (diff === 0) return null
+    return diff
+  }
 
-  const healthScoreChartData = chronologicalScans.map((scan) => ({
-    date: new Date(scan.created_at).toLocaleDateString('es-ES'),
-    score: scan.health_score,
+  // ── Chart data ──
+  const healthScoreChartData = chronologicalScans.map((s) => ({
+    date: new Date(s.created_at).toLocaleDateString('es-ES', { day: '2-digit', month: 'short' }),
+    score: s.health_score,
   }))
 
-  const hardcodedChartData = chronologicalScans.map((scan) => ({
-    date: new Date(scan.created_at).toLocaleDateString('es-ES'),
-    colores: scan.class_count,
-    fuentes: scan.id_count,
-    spacing: scan.important_count,
-    'z-index': scan.variable_count,
+  const weightChartData = chronologicalScans.map((s) => ({
+    date: new Date(s.created_at).toLocaleDateString('es-ES', { day: '2-digit', month: 'short' }),
+    peso: +(s.file_size / 1024).toFixed(1),
+    lineas: s.line_count,
   }))
 
-  const duplicatesChartData = chronologicalScans.map((scan) => ({
-    date: new Date(scan.created_at).toLocaleDateString('es-ES'),
-    selectores: scan.total_selectors,
-    declaraciones: scan.total_declarations,
+  const selectorsChartData = chronologicalScans.map((s) => ({
+    date: new Date(s.created_at).toLocaleDateString('es-ES', { day: '2-digit', month: 'short' }),
+    selectores: s.total_selectors,
+    declaraciones: s.total_declarations,
+    unicas: s.unique_declarations,
   }))
 
-  const latestScan = scans.length > 0 ? scans[0] : null
-  const latestScanBreakdown = latestScan
+  const issuesChartData = chronologicalScans.map((s) => ({
+    date: new Date(s.created_at).toLocaleDateString('es-ES', { day: '2-digit', month: 'short' }),
+    '!important': s.important_count,
+    IDs: s.id_count,
+  }))
+
+  const reuseChartData = chronologicalScans.map((s) => ({
+    date: new Date(s.created_at).toLocaleDateString('es-ES', { day: '2-digit', month: 'short' }),
+    ratio: +(s.reuse_ratio * 100).toFixed(1),
+  }))
+
+  const compositionChartData = latestScan
     ? [
-        { name: '!important', value: latestScan.important_count },
-        { name: 'IDs', value: latestScan.id_count },
-        { name: 'Variables', value: latestScan.variable_count },
+        { name: 'Clases', value: latestScan.class_count, fill: '#006c48' },
+        { name: 'IDs', value: latestScan.id_count, fill: '#a67c00' },
+        { name: '!important', value: latestScan.important_count, fill: '#9e2b25' },
+        { name: 'Variables', value: latestScan.variable_count, fill: '#2a9d6e' },
       ]
     : []
 
+  // ── Loading / Error states ──
   if (loading && projects.length === 0) {
     return (
       <div className="flex items-center justify-center py-24">
@@ -185,35 +327,32 @@ export function DashboardPage() {
     )
   }
 
+  // ── Render ──
   return (
-    <div className="flex min-h-[calc(100vh-73px)]">
-      {/* Left Sidebar */}
-      <div className="w-64 bg-[#f0f2f1] border-0 p-6">
+    <div className="flex min-h-[calc(100vh-73px)] w-full">
+      {/* ─── Sidebar ─── */}
+      <div className="w-64 shrink-0 bg-white rounded-2xl m-[10px] p-6 shadow-sm self-start sticky top-[10px]">
         <div className="mb-6">
           <h2 className="text-lg font-semibold text-[#1a2e23] mb-4">Proyectos</h2>
 
           {!showNewProjectForm ? (
-            <Button
-              onClick={() => setShowNewProjectForm(true)}
-              className="w-full"
-              size="sm"
-            >
+            <Button onClick={() => setShowNewProjectForm(true)} className="w-full" size="sm">
               Nuevo proyecto
             </Button>
           ) : (
-            <div className="space-y-3 p-3 bg-white rounded-xl border-0">
+            <div className="space-y-3 p-3 bg-[#f8f9fa] rounded-xl">
               <input
                 type="text"
                 placeholder="Nombre del proyecto"
                 value={newProjectName}
                 onChange={(e) => setNewProjectName(e.target.value)}
-                className="w-full px-3 py-2 bg-[#f8f9fa] rounded-xl border-0 text-sm focus:outline-none focus:ring-2 focus:ring-[#006c48]"
+                className="w-full px-3 py-2 bg-white rounded-lg border-0 text-sm focus:outline-none focus:ring-2 focus:ring-[#006c48]"
               />
               <textarea
                 placeholder="Descripción (opcional)"
                 value={newProjectDescription}
                 onChange={(e) => setNewProjectDescription(e.target.value)}
-                className="w-full px-3 py-2 bg-[#f8f9fa] rounded-xl border-0 text-sm focus:outline-none focus:ring-2 focus:ring-[#006c48] resize-none"
+                className="w-full px-3 py-2 bg-white rounded-lg border-0 text-sm focus:outline-none focus:ring-2 focus:ring-[#006c48] resize-none"
                 rows={2}
               />
               <div className="flex gap-2">
@@ -242,22 +381,13 @@ export function DashboardPage() {
             <div
               key={project.id}
               className={`p-3 rounded-lg cursor-pointer transition-colors ${
-                selectedProjectId === project.id
-                  ? 'bg-[#e0f5ec] border-0'
-                  : 'bg-white/60 border-0 hover:bg-white'
+                selectedProjectId === project.id ? 'bg-[#e0f5ec]' : 'hover:bg-[#f8f9fa]'
               }`}
             >
-              <button
-                onClick={() => setSelectedProjectId(project.id)}
-                className="w-full text-left"
-              >
-                <h3 className="font-medium text-[#1a2e23] text-sm">
-                  {project.name}
-                </h3>
+              <button onClick={() => setSelectedProjectId(project.id)} className="w-full text-left">
+                <h3 className="font-medium text-[#1a2e23] text-sm">{project.name}</h3>
                 {project.description && (
-                  <p className="text-xs text-[#3d5a4a] mt-0.5 truncate">
-                    {project.description}
-                  </p>
+                  <p className="text-xs text-[#3d5a4a] mt-0.5 truncate">{project.description}</p>
                 )}
               </button>
               {profile?.role === 'super_admin' && (
@@ -274,144 +404,345 @@ export function DashboardPage() {
 
         {projects.length === 0 && !loading && (
           <div className="text-center py-8">
-            <p className="text-sm text-[#3d5a4a]">No hay proyectos aún</p>
+            <p className="text-sm text-[#3d5a4a]">No hay proyectos aun</p>
           </div>
         )}
       </div>
 
-      {/* Main Content */}
-      <div className="flex-1 p-8">
+      {/* ─── Main Content ─── */}
+      <div className="flex-1 min-w-0 p-8 space-y-8">
         {selectedProject ? (
-          <div className="space-y-8">
-            <div>
-              <h1 className="text-3xl font-bold text-[#1a2e23]">
-                {selectedProject.name}
-              </h1>
-              <p className="text-[#3d5a4a] mt-2">
-                {scans.length} escaneo{scans.length !== 1 ? 's' : ''} •{' '}
-                {latestScan
-                  ? `Última actualización: ${new Date(latestScan.created_at).toLocaleDateString('es-ES')}`
-                  : 'Sin escaneos'}
-              </p>
-            </div>
+          scans.length > 0 && latestScan ? (
+            <>
+              {/* ── Header ── */}
+              <div className="flex items-end justify-between">
+                <div>
+                  <h1 className="text-3xl font-bold text-[#1a2e23]">{selectedProject.name}</h1>
+                  <p className="text-[#3d5a4a] mt-1">
+                    {scans.length} escaneo{scans.length !== 1 ? 's' : ''} · Ultima actualizacion:{' '}
+                    {new Date(latestScan.created_at).toLocaleDateString('es-ES', {
+                      day: 'numeric',
+                      month: 'long',
+                      year: 'numeric',
+                    })}
+                  </p>
+                </div>
+                <Badge className={`text-base px-4 py-1 ${getHealthScoreBadgeColor(latestScan.health_score)}`}>
+                  Health Score: {latestScan.health_score}
+                </Badge>
+              </div>
 
-            {scans.length > 0 ? (
-              <>
+              {/* ══════════════════════════════════════════════════════════════
+                   HERO — CSS Health Score Line Chart
+                 ══════════════════════════════════════════════════════════════ */}
+              <Card className="p-6">
+                <div className="flex items-center justify-between mb-2">
+                  <div>
+                    <h2 className="text-lg font-semibold text-[#1a2e23]">CSS Health Score</h2>
+                    <p className="text-sm text-[#3d5a4a]">Evolucion de la calidad del CSS a lo largo de los escaneos</p>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <ScoreRing score={latestScan.health_score} size={80} />
+                  </div>
+                </div>
+                <ResponsiveContainer width="100%" height={280}>
+                  <LineChart data={healthScoreChartData}>
+                    <defs>
+                      <linearGradient id="healthLine" x1="0" y1="0" x2="1" y2="0">
+                        <stop offset="0%" stopColor="#9e2b25" />
+                        <stop offset="50%" stopColor="#a67c00" />
+                        <stop offset="100%" stopColor="#006c48" />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#f0f2f1" />
+                    <XAxis dataKey="date" tick={{ fontSize: 12 }} tickLine={false} axisLine={false} />
+                    <YAxis domain={[0, 100]} tick={{ fontSize: 12 }} tickLine={false} axisLine={false} />
+                    <Tooltip
+                      contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 4px 20px rgba(0,0,0,0.08)' }}
+                      formatter={(value: number) => [`${value} / 100`, 'Health Score']}
+                    />
+                    <Line
+                      type="monotone"
+                      dataKey="score"
+                      stroke="#006c48"
+                      strokeWidth={3}
+                      dot={{ fill: '#006c48', strokeWidth: 2, r: 5 }}
+                      activeDot={{ r: 7, fill: '#006c48', stroke: '#fff', strokeWidth: 2 }}
+                      name="Health Score"
+                    />
+                  </LineChart>
+                </ResponsiveContainer>
+              </Card>
+
+              {/* ══════════════════════════════════════════════════════════════
+                   SECTION 1 — Metrics Cards
+                 ══════════════════════════════════════════════════════════════ */}
+              <div>
+                <h2 className="text-lg font-semibold text-[#1a2e23] mb-4">Metricas del ultimo escaneo</h2>
+                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
+                  <MetricCard icon={FileText} label="Peso" value={(latestScan.file_size / 1024).toFixed(1)} unit="KB" delta={previousScan ? +((latestScan.file_size - previousScan.file_size) / 1024).toFixed(1) : null} invertDelta />
+                  <MetricCard icon={Ruler} label="Lineas" value={latestScan.line_count.toLocaleString()} color="#2a9d6e" delta={getDelta(latestScan.line_count, previousScan?.line_count)} invertDelta />
+                  <MetricCard icon={Hash} label="Clases" value={latestScan.class_count.toLocaleString()} color="#006c48" delta={getDelta(latestScan.class_count, previousScan?.class_count)} />
+                  <MetricCard icon={AtSign} label="IDs" value={latestScan.id_count.toLocaleString()} color="#a67c00" delta={getDelta(latestScan.id_count, previousScan?.id_count)} invertDelta />
+                  <MetricCard icon={AlertTriangle} label="!important" value={latestScan.important_count.toLocaleString()} color="#9e2b25" delta={getDelta(latestScan.important_count, previousScan?.important_count)} invertDelta />
+                  <MetricCard icon={Variable} label="Variables CSS" value={latestScan.variable_count.toLocaleString()} color="#2a9d6e" delta={getDelta(latestScan.variable_count, previousScan?.variable_count)} />
+                  <MetricCard icon={Layers} label="Selectores" value={latestScan.total_selectors.toLocaleString()} delta={getDelta(latestScan.total_selectors, previousScan?.total_selectors)} invertDelta />
+                  <MetricCard icon={FileCode} label="Declaraciones" value={latestScan.total_declarations.toLocaleString()} delta={getDelta(latestScan.total_declarations, previousScan?.total_declarations)} invertDelta />
+                  <MetricCard icon={Copy} label="Unicas" value={latestScan.unique_declarations.toLocaleString()} color="#5cc49a" delta={getDelta(latestScan.unique_declarations, previousScan?.unique_declarations)} invertDelta />
+                  <MetricCard icon={Recycle} label="Ratio reutilizacion" value={(latestScan.reuse_ratio * 100).toFixed(1)} unit="%" color={latestScan.reuse_ratio >= 0.5 ? '#006c48' : '#9e2b25'} delta={previousScan ? +((latestScan.reuse_ratio - previousScan.reuse_ratio) * 100).toFixed(1) : null} />
+                </div>
+              </div>
+
+              {/* ══════════════════════════════════════════════════════════════
+                   SECTION 2 — W3C Validation + Design System Coverage
+                 ══════════════════════════════════════════════════════════════ */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {/* W3C Validation */}
+                <Card className="p-6">
+                  <div className="flex items-center gap-2 mb-4">
+                    <ShieldCheck size={20} className="text-[#006c48]" />
+                    <h3 className="text-lg font-semibold text-[#1a2e23]">Validacion W3C</h3>
+                  </div>
+                  {latestDetail?.w3c_validation ? (
+                    <div className="space-y-4">
+                      <div className="flex items-center gap-6">
+                        <div className="text-center">
+                          <p className="text-3xl font-bold text-[#9e2b25]">
+                            {latestDetail.w3c_validation.errorCount}
+                          </p>
+                          <p className="text-xs text-[#3d5a4a]">Errores</p>
+                        </div>
+                        <div className="text-center">
+                          <p className="text-3xl font-bold text-[#a67c00]">
+                            {latestDetail.w3c_validation.warningCount}
+                          </p>
+                          <p className="text-xs text-[#3d5a4a]">Warnings</p>
+                        </div>
+                        <div className="ml-auto">
+                          <Badge
+                            className={
+                              latestDetail.w3c_validation.valid
+                                ? 'bg-[#e0f5ec] text-[#006c48]'
+                                : 'bg-[#fef2f1] text-[#9e2b25]'
+                            }
+                          >
+                            {latestDetail.w3c_validation.valid ? 'Valido' : 'Con errores'}
+                          </Badge>
+                        </div>
+                      </div>
+                      {latestDetail.w3c_validation.errors.length > 0 && (
+                        <div className="mt-3 max-h-40 overflow-y-auto space-y-1">
+                          {latestDetail.w3c_validation.errors.slice(0, 5).map((err, i) => (
+                            <p key={i} className="text-xs text-[#9e2b25] bg-[#fef2f1] rounded px-2 py-1">
+                              {err}
+                            </p>
+                          ))}
+                          {latestDetail.w3c_validation.errors.length > 5 && (
+                            <p className="text-xs text-[#3d5a4a]">
+                              +{latestDetail.w3c_validation.errors.length - 5} errores mas...
+                            </p>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="text-sm text-[#3d5a4a]">
+                      No hay datos de validacion W3C. Ejecuta la validacion desde la seccion Analizar.
+                    </p>
+                  )}
+                </Card>
+
+                {/* Design System Coverage */}
+                <Card className="p-6">
+                  <div className="flex items-center gap-2 mb-4">
+                    <Palette size={20} className="text-[#006c48]" />
+                    <h3 className="text-lg font-semibold text-[#1a2e23]">Cobertura Design System</h3>
+                  </div>
+                  {latestDetail?.ds_coverage ? (
+                    <div className="space-y-4">
+                      <div className="flex items-center gap-4">
+                        <ScoreRing score={Math.round(latestDetail.ds_coverage.overallCoverage)} size={100} />
+                        <div className="flex-1 space-y-3">
+                          <CoverageBar label="Colores" value={latestDetail.ds_coverage.colors} color="#006c48" />
+                          <CoverageBar label="Tipografia" value={latestDetail.ds_coverage.fontSizes} color="#2a9d6e" />
+                          <CoverageBar label="Spacing" value={latestDetail.ds_coverage.spacing} color="#5cc49a" />
+                          <CoverageBar label="Z-index" value={latestDetail.ds_coverage.zIndex} color="#a67c00" />
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="text-sm text-[#3d5a4a]">
+                      No hay datos de cobertura. Carga tus tokens de Design System desde la seccion Analizar.
+                    </p>
+                  )}
+                </Card>
+              </div>
+
+              {/* ══════════════════════════════════════════════════════════════
+                   SECTION 3 — Evolution Charts
+                 ══════════════════════════════════════════════════════════════ */}
+              <div>
+                <h2 className="text-lg font-semibold text-[#1a2e23] mb-4">Evolucion</h2>
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                  {/* Weight & Lines */}
                   <Card className="p-6">
-                    <h3 className="text-lg font-semibold text-[#1a2e23] mb-4">
-                      Evolución del Score de Salud
-                    </h3>
-                    <ResponsiveContainer width="100%" height={300}>
-                      <LineChart data={healthScoreChartData}>
-                        <CartesianGrid strokeDasharray="3 3" />
-                        <XAxis dataKey="date" />
-                        <YAxis domain={[0, 100]} />
+                    <h3 className="text-sm font-semibold text-[#1a2e23] mb-3">Peso y Lineas</h3>
+                    <ResponsiveContainer width="100%" height={250}>
+                      <LineChart data={weightChartData}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#f0f2f1" />
+                        <XAxis dataKey="date" tick={{ fontSize: 11 }} />
+                        <YAxis yAxisId="left" tick={{ fontSize: 11 }} />
+                        <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 11 }} />
                         <Tooltip />
-                        <Line type="monotone" dataKey="score" stroke="#012d1d" strokeWidth={2} name="Score" />
+                        <Legend />
+                        <Line yAxisId="left" type="monotone" dataKey="peso" stroke="#012d1d" strokeWidth={2} name="Peso (KB)" />
+                        <Line yAxisId="right" type="monotone" dataKey="lineas" stroke="#5cc49a" strokeWidth={2} name="Lineas" />
                       </LineChart>
                     </ResponsiveContainer>
                   </Card>
 
+                  {/* Selectors & Declarations */}
                   <Card className="p-6">
-                    <h3 className="text-lg font-semibold text-[#1a2e23] mb-4">
-                      Valores Hardcodeados
-                    </h3>
-                    <ResponsiveContainer width="100%" height={300}>
-                      <AreaChart data={hardcodedChartData}>
-                        <CartesianGrid strokeDasharray="3 3" />
-                        <XAxis dataKey="date" />
-                        <YAxis />
+                    <h3 className="text-sm font-semibold text-[#1a2e23] mb-3">Selectores y Declaraciones</h3>
+                    <ResponsiveContainer width="100%" height={250}>
+                      <AreaChart data={selectorsChartData}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#f0f2f1" />
+                        <XAxis dataKey="date" tick={{ fontSize: 11 }} />
+                        <YAxis tick={{ fontSize: 11 }} />
                         <Tooltip />
                         <Legend />
-                        <Area type="monotone" dataKey="colores" stackId="1" stroke="#9e2b25" fill="rgba(158,43,37,0.2)" />
-                        <Area type="monotone" dataKey="fuentes" stackId="1" stroke="#a67c00" fill="rgba(166,124,0,0.2)" />
-                        <Area type="monotone" dataKey="spacing" stackId="1" stroke="#2a9d6e" fill="rgba(42,157,110,0.2)" />
-                        <Area type="monotone" dataKey="z-index" stackId="1" stroke="#5cc49a" fill="rgba(92,196,154,0.2)" />
+                        <Area type="monotone" dataKey="selectores" stroke="#012d1d" fill="rgba(1,45,29,0.1)" strokeWidth={2} name="Selectores" />
+                        <Area type="monotone" dataKey="declaraciones" stroke="#006c48" fill="rgba(0,108,72,0.1)" strokeWidth={2} name="Declaraciones" />
+                        <Area type="monotone" dataKey="unicas" stroke="#5cc49a" fill="rgba(92,196,154,0.1)" strokeWidth={2} name="Unicas" />
                       </AreaChart>
                     </ResponsiveContainer>
                   </Card>
 
+                  {/* !important & IDs */}
                   <Card className="p-6">
-                    <h3 className="text-lg font-semibold text-[#1a2e23] mb-4">
-                      Tendencia de Duplicados
-                    </h3>
-                    <ResponsiveContainer width="100%" height={300}>
-                      <LineChart data={duplicatesChartData}>
-                        <CartesianGrid strokeDasharray="3 3" />
-                        <XAxis dataKey="date" />
-                        <YAxis />
+                    <h3 className="text-sm font-semibold text-[#1a2e23] mb-3">!important e IDs</h3>
+                    <ResponsiveContainer width="100%" height={250}>
+                      <BarChart data={issuesChartData}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#f0f2f1" />
+                        <XAxis dataKey="date" tick={{ fontSize: 11 }} />
+                        <YAxis tick={{ fontSize: 11 }} />
                         <Tooltip />
                         <Legend />
-                        <Line type="monotone" dataKey="selectores" stroke="#012d1d" strokeWidth={2} />
-                        <Line type="monotone" dataKey="declaraciones" stroke="#006c48" strokeWidth={2} />
-                      </LineChart>
+                        <Bar dataKey="!important" fill="#9e2b25" radius={[4, 4, 0, 0]} name="!important" />
+                        <Bar dataKey="IDs" fill="#a67c00" radius={[4, 4, 0, 0]} name="IDs" />
+                      </BarChart>
                     </ResponsiveContainer>
                   </Card>
 
-                  {latestScanBreakdown.length > 0 && (
-                    <Card className="p-6">
-                      <h3 className="text-lg font-semibold text-[#1a2e23] mb-4">
-                        Desglose del Último Escaneo
-                      </h3>
-                      <ResponsiveContainer width="100%" height={300}>
-                        <BarChart data={latestScanBreakdown}>
-                          <CartesianGrid strokeDasharray="3 3" />
-                          <XAxis dataKey="name" />
-                          <YAxis />
-                          <Tooltip />
-                          <Bar dataKey="value" fill="#006c48" />
-                        </BarChart>
-                      </ResponsiveContainer>
-                    </Card>
-                  )}
-                </div>
+                  {/* Reuse Ratio */}
+                  <Card className="p-6">
+                    <h3 className="text-sm font-semibold text-[#1a2e23] mb-3">Ratio de Reutilizacion</h3>
+                    <ResponsiveContainer width="100%" height={250}>
+                      <AreaChart data={reuseChartData}>
+                        <defs>
+                          <linearGradient id="reuseGrad" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor="#2a9d6e" stopOpacity={0.2} />
+                            <stop offset="95%" stopColor="#2a9d6e" stopOpacity={0} />
+                          </linearGradient>
+                        </defs>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#f0f2f1" />
+                        <XAxis dataKey="date" tick={{ fontSize: 11 }} />
+                        <YAxis domain={[0, 100]} tick={{ fontSize: 11 }} unit="%" />
+                        <Tooltip formatter={(v: number) => `${v}%`} />
+                        <Area type="monotone" dataKey="ratio" stroke="#2a9d6e" strokeWidth={2} fill="url(#reuseGrad)" name="Reutilizacion" />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  </Card>
 
-                <Card className="p-6">
-                  <h3 className="text-lg font-semibold text-[#1a2e23] mb-4">
-                    Escaneos
-                  </h3>
+                  {/* Composition Bar */}
+                  <Card className="p-6">
+                    <h3 className="text-sm font-semibold text-[#1a2e23] mb-3">Composicion del CSS</h3>
+                    <ResponsiveContainer width="100%" height={250}>
+                      <BarChart data={compositionChartData} layout="vertical">
+                        <CartesianGrid strokeDasharray="3 3" stroke="#f0f2f1" />
+                        <XAxis type="number" tick={{ fontSize: 11 }} />
+                        <YAxis dataKey="name" type="category" tick={{ fontSize: 11 }} width={80} />
+                        <Tooltip />
+                        <Bar dataKey="value" radius={[0, 4, 4, 0]} name="Cantidad">
+                          {compositionChartData.map((entry, index) => (
+                            <rect key={index} fill={entry.fill} />
+                          ))}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </Card>
+                </div>
+              </div>
+
+              {/* ══════════════════════════════════════════════════════════════
+                   SECTION 4 — Scans History Table
+                 ══════════════════════════════════════════════════════════════ */}
+              <div>
+                <h2 className="text-lg font-semibold text-[#1a2e23] mb-4">Historial de escaneos</h2>
+                <Card className="p-0 overflow-hidden">
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm">
                       <thead>
-                        <tr className="border-0 border-b-0">
+                        <tr className="bg-[#f8f9fa]">
                           <th className="text-left py-3 px-4 font-semibold text-[#1a2e23]">Etiqueta</th>
                           <th className="text-left py-3 px-4 font-semibold text-[#1a2e23]">Fecha</th>
-                          <th className="text-left py-3 px-4 font-semibold text-[#1a2e23]">Score</th>
-                          <th className="text-left py-3 px-4 font-semibold text-[#1a2e23]">Tamaño</th>
-                          <th className="text-left py-3 px-4 font-semibold text-[#1a2e23]">Selectores</th>
-                          <th className="text-left py-3 px-4 font-semibold text-[#1a2e23]">Declaraciones</th>
-                          <th className="text-left py-3 px-4 font-semibold text-[#1a2e23]">Acciones</th>
+                          <th className="text-center py-3 px-4 font-semibold text-[#1a2e23]">Score</th>
+                          <th className="text-right py-3 px-4 font-semibold text-[#1a2e23]">Peso</th>
+                          <th className="text-right py-3 px-4 font-semibold text-[#1a2e23]">Lineas</th>
+                          <th className="text-right py-3 px-4 font-semibold text-[#1a2e23]">Clases</th>
+                          <th className="text-right py-3 px-4 font-semibold text-[#1a2e23]">IDs</th>
+                          <th className="text-right py-3 px-4 font-semibold text-[#1a2e23]">!imp</th>
+                          <th className="text-right py-3 px-4 font-semibold text-[#1a2e23]">Vars</th>
+                          <th className="text-right py-3 px-4 font-semibold text-[#1a2e23]">Select.</th>
+                          <th className="text-right py-3 px-4 font-semibold text-[#1a2e23]">Decl.</th>
+                          <th className="text-right py-3 px-4 font-semibold text-[#1a2e23]">Unicas</th>
+                          <th className="text-right py-3 px-4 font-semibold text-[#1a2e23]">Reuso</th>
+                          <th className="text-center py-3 px-4 font-semibold text-[#1a2e23]">Acciones</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {scans.map((scan) => (
-                          <tr key={scan.id} className="border-0 hover:bg-[#f0f2f1]">
-                            <td className="py-3 px-4 text-[#1a2e23]">{scan.label}</td>
-                            <td className="py-3 px-4 text-[#1a2e23]">
-                              {new Date(scan.created_at).toLocaleDateString('es-ES')}
+                        {scans.map((scan, idx) => (
+                          <tr key={scan.id} className="border-t border-[#f0f2f1] hover:bg-[#f8f9fa] transition-colors">
+                            <td className="py-3 px-4 font-medium text-[#1a2e23]">{scan.label}</td>
+                            <td className="py-3 px-4 text-[#3d5a4a]">
+                              {new Date(scan.created_at).toLocaleDateString('es-ES', {
+                                day: '2-digit',
+                                month: 'short',
+                                year: '2-digit',
+                              })}
                             </td>
-                            <td className="py-3 px-4">
+                            <td className="py-3 px-4 text-center">
                               <Badge className={getHealthScoreBadgeColor(scan.health_score)}>
                                 {scan.health_score}
                               </Badge>
                             </td>
-                            <td className="py-3 px-4 text-[#1a2e23]">
+                            <td className="py-3 px-4 text-right text-[#1a2e23]">
                               {(scan.file_size / 1024).toFixed(1)} KB
                             </td>
-                            <td className="py-3 px-4 text-[#1a2e23]">{scan.total_selectors}</td>
-                            <td className="py-3 px-4 text-[#1a2e23]">{scan.total_declarations}</td>
+                            <td className="py-3 px-4 text-right text-[#1a2e23]">{scan.line_count.toLocaleString()}</td>
+                            <td className="py-3 px-4 text-right text-[#1a2e23]">{scan.class_count.toLocaleString()}</td>
+                            <td className="py-3 px-4 text-right text-[#1a2e23]">{scan.id_count.toLocaleString()}</td>
+                            <td className="py-3 px-4 text-right text-[#1a2e23]">{scan.important_count.toLocaleString()}</td>
+                            <td className="py-3 px-4 text-right text-[#1a2e23]">{scan.variable_count.toLocaleString()}</td>
+                            <td className="py-3 px-4 text-right text-[#1a2e23]">{scan.total_selectors.toLocaleString()}</td>
+                            <td className="py-3 px-4 text-right text-[#1a2e23]">{scan.total_declarations.toLocaleString()}</td>
+                            <td className="py-3 px-4 text-right text-[#1a2e23]">{scan.unique_declarations.toLocaleString()}</td>
+                            <td className="py-3 px-4 text-right text-[#1a2e23]">
+                              {(scan.reuse_ratio * 100).toFixed(0)}%
+                            </td>
                             <td className="py-3 px-4">
-                              <div className="flex gap-2">
+                              <div className="flex gap-2 justify-center">
                                 <button
                                   onClick={() => setSelectedScanId(scan.id)}
-                                  className="text-[#006c48] hover:text-[#004d35]"
+                                  className="p-1.5 rounded-lg text-[#006c48] hover:bg-[#e0f5ec] transition-colors"
+                                  title="Ver detalle"
                                 >
                                   <Eye size={16} />
                                 </button>
                                 <button
                                   onClick={() => handleDeleteScan(scan.id)}
-                                  className="text-[#9e2b25] hover:text-[#7a1e1a]"
+                                  className="p-1.5 rounded-lg text-[#9e2b25] hover:bg-[#fef2f1] transition-colors"
+                                  title="Eliminar"
                                 >
                                   <Trash2 size={16} />
                                 </button>
@@ -423,16 +754,15 @@ export function DashboardPage() {
                     </table>
                   </div>
                 </Card>
-              </>
-            ) : (
-              <Card className="p-12 text-center">
-                <p className="text-[#3d5a4a]">
-                  No hay escaneos en este proyecto aún. Realiza un análisis en
-                  la sección "Analizar" para comenzar.
-                </p>
-              </Card>
-            )}
-          </div>
+              </div>
+            </>
+          ) : (
+            <Card className="p-12 text-center">
+              <p className="text-[#3d5a4a]">
+                No hay escaneos en este proyecto aun. Realiza un analisis en la seccion "Analizar" para comenzar.
+              </p>
+            </Card>
+          )
         ) : (
           <div className="flex items-center justify-center py-24">
             <p className="text-[#3d5a4a] text-lg">Crea un proyecto para comenzar</p>
@@ -440,12 +770,7 @@ export function DashboardPage() {
         )}
       </div>
 
-      {selectedScanId && (
-        <ScanDetailModal
-          scanId={selectedScanId}
-          onClose={() => setSelectedScanId(null)}
-        />
-      )}
+      {selectedScanId && <ScanDetailModal scanId={selectedScanId} onClose={() => setSelectedScanId(null)} />}
     </div>
   )
 }

@@ -155,6 +155,34 @@ export async function getScanDetail(scanId: string): Promise<ScanDetail> {
 }
 
 /**
+ * Get the latest scan detail (with W3C + DS data) for a project
+ */
+export async function getLatestScanDetail(projectId: string): Promise<ScanDetail | null> {
+  const { data: scanData, error: scanError } = await supabase
+    .from('scans')
+    .select('*')
+    .eq('project_id', projectId)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .single()
+
+  if (scanError || !scanData) return null
+
+  const { data: detailData } = await supabase
+    .from('scan_details')
+    .select('analysis_data, w3c_validation, ds_coverage')
+    .eq('scan_id', scanData.id)
+    .single()
+
+  return {
+    ...scanData,
+    analysis_data: detailData?.analysis_data || {},
+    w3c_validation: detailData?.w3c_validation,
+    ds_coverage: detailData?.ds_coverage,
+  } as ScanDetail
+}
+
+/**
  * Ensure user has a valid session, throw if not
  */
 async function ensureAuth() {

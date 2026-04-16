@@ -1,12 +1,14 @@
+import { useState } from "react"
 import { FileDropZone } from "@/components/input/FileDropZone"
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Progress } from "@/components/ui/progress"
 import {
   Table, TableBody, TableCell, TableHead,
   TableHeader, TableRow
 } from "@/components/ui/table"
-import { Palette, Type, Ruler, Layers, Upload } from "lucide-react"
+import { Palette, Type, Ruler, Layers, Upload, Link, Loader2, X } from "lucide-react"
 import type { DsTokenSet, DsCoverageResult, DsCategoryResult } from "@/types/design-system"
 import type { AnalysisResult } from "@/types/analysis"
 
@@ -15,24 +17,96 @@ interface DesignSystemTabProps {
   coverage: DsCoverageResult | null
   error: string | null
   fileName: string | null
+  loading?: boolean
   onLoadTokens: (content: string, fileName: string) => void
+  onLoadFromUrl?: (url: string) => Promise<unknown>
+  onReset?: () => void
   result: AnalysisResult | null
 }
 
-export function DesignSystemTab({ tokens, coverage, error, fileName, onLoadTokens, result }: DesignSystemTabProps) {
+export function DesignSystemTab({
+  tokens, coverage, error, fileName, loading,
+  onLoadTokens, onLoadFromUrl, onReset, result
+}: DesignSystemTabProps) {
+  const [urlInput, setUrlInput] = useState("")
+  const [showUrlInput, setShowUrlInput] = useState(false)
+
+  const handleLoadUrl = async () => {
+    if (!urlInput.trim() || !onLoadFromUrl) return
+    await onLoadFromUrl(urlInput.trim())
+    setShowUrlInput(false)
+  }
+
   return (
     <div className="space-y-6">
       {/* Token Upload */}
       <div>
         <h3 className="text-sm font-semibold mb-3">Tokens del Design System</h3>
         {!tokens ? (
-          <FileDropZone onFileContent={onLoadTokens} accept=".json,.css" className="min-h-[120px]">
-            <div className="flex flex-col items-center justify-center gap-2 p-6 text-muted-foreground">
-              <Upload className="h-8 w-8" />
-              <p className="text-sm font-medium">Carga tus tokens del Design System</p>
-              <p className="text-xs">Acepta JSON (Style Dictionary, Figma Tokens) o CSS con custom properties</p>
-            </div>
-          </FileDropZone>
+          <div className="space-y-3">
+            {!showUrlInput ? (
+              <>
+                <FileDropZone onFileContent={onLoadTokens} accept=".json,.css" className="min-h-[120px]">
+                  <div className="flex flex-col items-center justify-center gap-2 p-6 text-muted-foreground">
+                    <Upload className="h-8 w-8" />
+                    <p className="text-sm font-medium">Carga tus tokens del Design System</p>
+                    <p className="text-xs">Acepta JSON (Style Dictionary, Figma Tokens) o CSS con custom properties</p>
+                  </div>
+                </FileDropZone>
+                <div className="flex items-center gap-3">
+                  <div className="flex-1 h-px bg-border" />
+                  <span className="text-xs text-muted-foreground">o</span>
+                  <div className="flex-1 h-px bg-border" />
+                </div>
+                <Button
+                  variant="outline"
+                  className="w-full gap-2"
+                  onClick={() => setShowUrlInput(true)}
+                >
+                  <Link size={16} />
+                  Cargar desde URL
+                </Button>
+              </>
+            ) : (
+              <Card>
+                <CardContent className="p-4 space-y-3">
+                  <div className="flex items-center gap-2">
+                    <Link size={16} className="text-muted-foreground shrink-0" />
+                    <input
+                      type="url"
+                      value={urlInput}
+                      onChange={(e) => setUrlInput(e.target.value)}
+                      placeholder="https://ejemplo.com/framework.css"
+                      className="flex-1 px-3 py-2 bg-[#f8f9fa] rounded-lg border-0 text-sm focus:outline-none focus:ring-2 focus:ring-[#006c48]"
+                      autoFocus
+                      onKeyDown={(e) => e.key === 'Enter' && handleLoadUrl()}
+                    />
+                  </div>
+                  <div className="flex gap-2">
+                    <Button
+                      size="sm"
+                      className="flex-1 gap-2"
+                      onClick={handleLoadUrl}
+                      disabled={!urlInput.trim() || loading}
+                    >
+                      {loading ? <Loader2 size={14} className="animate-spin" /> : null}
+                      {loading ? 'Cargando...' : 'Cargar CSS'}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => { setShowUrlInput(false); setUrlInput("") }}
+                    >
+                      Cancelar
+                    </Button>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Introduce la URL del CSS de tu framework (ej. HolyGrail5, Bootstrap, Tailwind...)
+                  </p>
+                </CardContent>
+              </Card>
+            )}
+          </div>
         ) : (
           <Card>
             <CardContent className="p-4">
@@ -44,7 +118,18 @@ export function DesignSystemTab({ tokens, coverage, error, fileName, onLoadToken
                     {tokens.spacing.length} spacing, {tokens.zIndex.length} z-index
                   </p>
                 </div>
-                <Badge variant="secondary">Cargado</Badge>
+                <div className="flex items-center gap-2">
+                  <Badge variant="secondary">Cargado</Badge>
+                  {onReset && (
+                    <button
+                      onClick={onReset}
+                      className="p-1 rounded-lg text-muted-foreground hover:bg-muted transition-colors"
+                      title="Cambiar framework"
+                    >
+                      <X size={16} />
+                    </button>
+                  )}
+                </div>
               </div>
             </CardContent>
           </Card>
@@ -73,26 +158,10 @@ export function DesignSystemTab({ tokens, coverage, error, fileName, onLoadToken
 
           {/* Category Cards */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <CategoryCard
-              icon={Palette}
-              label="Colores"
-              category={coverage.colors}
-            />
-            <CategoryCard
-              icon={Type}
-              label="Font Sizes"
-              category={coverage.fontSizes}
-            />
-            <CategoryCard
-              icon={Ruler}
-              label="Spacing"
-              category={coverage.spacing}
-            />
-            <CategoryCard
-              icon={Layers}
-              label="Z-index"
-              category={coverage.zIndex}
-            />
+            <CategoryCard icon={Palette} label="Colores" category={coverage.colors} />
+            <CategoryCard icon={Type} label="Font Sizes" category={coverage.fontSizes} />
+            <CategoryCard icon={Ruler} label="Spacing" category={coverage.spacing} />
+            <CategoryCard icon={Layers} label="Z-index" category={coverage.zIndex} />
           </div>
 
           {/* Mismatches Detail */}

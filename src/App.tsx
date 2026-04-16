@@ -4,7 +4,7 @@ import { useAuth } from '@/contexts/AuthContext'
 import { LoginPage } from '@/components/auth/LoginPage'
 import { AppLayout } from '@/components/layout/AppLayout'
 import { DashboardPage } from '@/components/dashboard/DashboardPage'
-import { saveScan, getProjects, createProject } from '@/lib/scan-storage'
+import { saveScan, getProjects } from '@/lib/scan-storage'
 import type { Project } from '@/lib/scan-storage'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Card } from '@/components/ui/card'
@@ -26,7 +26,6 @@ import {
   Component,
   Code,
   Save,
-  Plus,
 } from 'lucide-react'
 
 function AnalyzePage() {
@@ -35,8 +34,6 @@ function AnalyzePage() {
   const ds = useDesignSystem()
   const [showSaveForm, setShowSaveForm] = useState(false)
   const [projects, setProjects] = useState<Project[]>([])
-  const [creatingProject, setCreatingProject] = useState(false)
-  const [newProjectName, setNewProjectName] = useState('')
   const [saveFormData, setSaveFormData] = useState({
     projectId: '',
     label: '',
@@ -137,8 +134,8 @@ function AnalyzePage() {
     <div className="space-y-6 py-6 px-4">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-2xl font-bold text-[#1a2e23] font-['Plus_Jakarta_Sans']">Analizar CSS</h2>
-          <p className="text-[#3d5a4a] mt-1">
+          <h2 className="text-2xl font-bold text-gray-900">Analizar CSS</h2>
+          <p className="text-gray-600 mt-1">
             Pega o arrastra tu CSS compilado para obtener métricas de calidad
           </p>
         </div>
@@ -163,83 +160,33 @@ function AnalyzePage() {
       )}
 
       {showSaveForm && result && (
-        <Card className="p-6 bg-[#e0f5ec] border-0">
-          <h3 className="text-lg font-semibold text-[#1a2e23] mb-4">
+        <Card className="p-6 bg-blue-50 border-blue-200">
+          <h3 className="text-lg font-semibold text-gray-900 mb-4">
             Guardar Escaneo
           </h3>
           <div className="space-y-4">
             <div>
-              <label className="block text-sm font-medium text-[#1a2e23] mb-1">
+              <label className="block text-sm font-medium text-gray-700 mb-1">
                 Proyecto
               </label>
-              {creatingProject ? (
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={newProjectName}
-                    onChange={(e) => setNewProjectName(e.target.value)}
-                    placeholder="Nombre del nuevo proyecto"
-                    className="flex-1 px-3 py-2 bg-white rounded-xl border-0 text-sm focus:outline-none focus:ring-2 focus:ring-[#006c48]"
-                    autoFocus
-                  />
-                  <Button
-                    size="sm"
-                    onClick={async () => {
-                      if (!newProjectName.trim()) return
-                      try {
-                        const newId = await createProject(newProjectName.trim())
-                        const refreshed = await getProjects()
-                        setProjects(refreshed)
-                        setSaveFormData({ ...saveFormData, projectId: newId })
-                        setCreatingProject(false)
-                        setNewProjectName('')
-                      } catch (err) {
-                        console.error('Error creating project:', err)
-                        setSavingStatus({ state: 'error', message: 'Error al crear proyecto' })
-                      }
-                    }}
-                    className="bg-[#006c48] hover:bg-[#005a3a] text-white"
-                  >
-                    Crear
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => { setCreatingProject(false); setNewProjectName('') }}
-                  >
-                    Cancelar
-                  </Button>
-                </div>
-              ) : (
-                <div className="flex gap-2">
-                  <select
-                    value={saveFormData.projectId}
-                    onChange={(e) =>
-                      setSaveFormData({ ...saveFormData, projectId: e.target.value })
-                    }
-                    className="flex-1 px-3 py-2 bg-white rounded-xl border-0 text-sm focus:outline-none focus:ring-2 focus:ring-[#006c48]"
-                  >
-                    <option value="">Selecciona un proyecto</option>
-                    {projects.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.name}
-                      </option>
-                    ))}
-                  </select>
-                  <Button
-                    size="sm"
-                    onClick={() => setCreatingProject(true)}
-                    className="gap-1 bg-[#006c48] hover:bg-[#005a3a] text-white"
-                  >
-                    <Plus size={14} />
-                    Nuevo
-                  </Button>
-                </div>
-              )}
+              <select
+                value={saveFormData.projectId}
+                onChange={(e) =>
+                  setSaveFormData({ ...saveFormData, projectId: e.target.value })
+                }
+                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="">Selecciona un proyecto</option>
+                {projects.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-[#1a2e23] mb-1">
+              <label className="block text-sm font-medium text-gray-700 mb-1">
                 Etiqueta del Escaneo
               </label>
               <input
@@ -249,18 +196,18 @@ function AnalyzePage() {
                   setSaveFormData({ ...saveFormData, label: e.target.value })
                 }
                 placeholder="ej: Versión 1.0, Revisión Q2..."
-                className="w-full px-3 py-2 bg-white rounded-xl border-0 text-sm focus:outline-none focus:ring-2 focus:ring-[#006c48]"
+                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
             </div>
 
             {savingStatus.message && (
               <div
-                className={`text-sm p-2 rounded-xl ${
+                className={`text-sm p-2 rounded ${
                   savingStatus.state === 'error'
-                    ? 'bg-[#fef2f1] text-[#9e2b25]'
+                    ? 'bg-red-100 text-red-800'
                     : savingStatus.state === 'success'
-                      ? 'bg-[#e0f5ec] text-[#006c48]'
-                      : 'bg-[#f0f2f1] text-[#1a2e23]'
+                      ? 'bg-green-100 text-green-800'
+                      : 'bg-gray-100 text-gray-800'
                 }`}
               >
                 {savingStatus.message}
@@ -344,7 +291,15 @@ function AnalyzePage() {
                 coverage={ds.coverage}
                 error={ds.error}
                 fileName={ds.fileName}
+                loading={ds.loading}
                 onLoadTokens={handleLoadTokens}
+                onLoadFromUrl={async (url: string) => {
+                  const parsed = await ds.loadFromUrl(url)
+                  if (parsed && result) {
+                    ds.compare(result, parsed)
+                  }
+                }}
+                onReset={ds.reset}
                 result={result}
               />
             </TabsContent>
@@ -354,11 +309,11 @@ function AnalyzePage() {
 
       {!result && !analysisError && (
         <div className="text-center py-16">
-          <Code className="h-16 w-16 mx-auto mb-4 text-[#3d5a4a]/30" />
-          <h2 className="text-lg font-semibold text-[#3d5a4a] mb-2">
+          <Code className="h-16 w-16 mx-auto mb-4 text-muted-foreground/30" />
+          <h2 className="text-lg font-semibold text-muted-foreground mb-2">
             Pega o arrastra tu CSS para empezar
           </h2>
-          <p className="text-sm text-[#3d5a4a] max-w-md mx-auto">
+          <p className="text-sm text-muted-foreground max-w-md mx-auto">
             KPY CSS Analyzer evaluará tu CSS compilado y te mostrará métricas
             de calidad, valores hardcodeados, duplicados, validación W3C y
             cobertura de Design System.
@@ -375,7 +330,7 @@ export default function App() {
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-screen">
-        <p className="text-[#3d5a4a]">Cargando...</p>
+        <p className="text-gray-500">Cargando...</p>
       </div>
     )
   }
