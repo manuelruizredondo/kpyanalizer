@@ -2,7 +2,6 @@ import { useState, useEffect, useRef } from 'react'
 import { useAuth } from '@/contexts/AuthContext'
 import { supabase } from '@/lib/supabase'
 import {
-  getProjects,
   createProject,
   getProjectScans,
   getLatestScanDetail,
@@ -45,12 +44,9 @@ import {
   FileCode,
   Copy,
   Recycle,
-  Activity,
   ShieldCheck,
   Palette,
   Type,
-  Space,
-  TrendingUp,
   Loader2,
   RefreshCw,
 } from 'lucide-react'
@@ -617,7 +613,7 @@ export function DashboardPage() {
                     <YAxis domain={[0, 100]} tick={{ fontSize: 12 }} tickLine={false} axisLine={false} />
                     <Tooltip
                       contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 4px 20px rgba(0,0,0,0.08)' }}
-                      formatter={(value: number) => [`${value} / 100`, 'Health Score']}
+                      formatter={(value) => [`${value} / 100`, 'Health Score']}
                     />
                     <Line
                       type="monotone"
@@ -1033,7 +1029,7 @@ export function DashboardPage() {
                         <CartesianGrid strokeDasharray="3 3" stroke="#f0f2f1" />
                         <XAxis dataKey="date" tick={{ fontSize: 11 }} />
                         <YAxis domain={[0, 100]} tick={{ fontSize: 11 }} unit="%" />
-                        <Tooltip formatter={(v: number) => `${v}%`} />
+                        <Tooltip formatter={(v) => `${v}%`} />
                         <Area type="monotone" dataKey="ratio" stroke="#2a9d6e" strokeWidth={2} fill="url(#reuseGrad)" name="Reutilizacion" />
                       </AreaChart>
                     </ResponsiveContainer>
@@ -1086,7 +1082,7 @@ export function DashboardPage() {
                         </tr>
                       </thead>
                       <tbody>
-                        {scans.map((scan, idx) => (
+                        {scans.map((scan) => (
                           <tr key={scan.id} className="border-t border-[#f0f2f1] hover:bg-[#f8f9fa] transition-colors">
                             <td className="py-3 px-4 font-medium text-[#1a2e23]">{scan.label}</td>
                             <td className="py-3 px-4 text-[#3d5a4a]">
