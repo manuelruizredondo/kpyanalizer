@@ -34,6 +34,7 @@ export function DashboardPage() {
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
   const [scans, setScans] = useState<Scan[]>([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
   const [showNewProjectForm, setShowNewProjectForm] = useState(false)
   const [newProjectName, setNewProjectName] = useState('')
   const [newProjectDescription, setNewProjectDescription] = useState('')
@@ -46,13 +47,21 @@ export function DashboardPage() {
   const loadProjects = async () => {
     try {
       setLoading(true)
-      const projectsList = await getProjects()
+      setError(null)
+
+      // Timeout de seguridad: si la query tarda más de 15s, abortar
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('La conexión tardó demasiado. Verifica tu conexión a internet.')), 15000)
+      )
+      const projectsList = await Promise.race([getProjects(), timeoutPromise])
+
       setProjects(projectsList)
       if (projectsList.length > 0 && !selectedProjectId) {
         setSelectedProjectId(projectsList[0].id)
       }
-    } catch (error) {
-      console.error('Error loading projects:', error)
+    } catch (err) {
+      console.error('Error loading projects:', err)
+      setError(err instanceof Error ? err.message : 'Error al cargar los proyectos. Intenta recargar la página.')
     } finally {
       setLoading(false)
     }
@@ -161,6 +170,17 @@ export function DashboardPage() {
     return (
       <div className="flex items-center justify-center py-24">
         <p className="text-gray-500">Cargando...</p>
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className="flex flex-col items-center justify-center py-24 gap-4">
+        <p className="text-red-600 text-center max-w-md">{error}</p>
+        <Button onClick={loadProjects} variant="outline" size="sm">
+          Reintentar
+        </Button>
       </div>
     )
   }
