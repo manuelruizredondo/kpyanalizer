@@ -80,14 +80,31 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const fetchUserProfile = async (userId: string) => {
     try {
-      const { data, error } = await supabase
-        .from('profiles')
-        .select('id, email, full_name, role, avatar_url')
-        .eq('id', userId)
-        .single()
+      // Use REST directly — the Supabase SDK hangs on this network
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session) return
 
-      if (error) throw error
-      setProfile(data as UserProfile)
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), 6000)
+
+      const resp = await fetch(
+        `https://lqgdrkwabcjrnnthlrmi.supabase.co/rest/v1/profiles?select=id,email,full_name,role,avatar_url&id=eq.${userId}`,
+        {
+          signal: controller.signal,
+          headers: {
+            'apikey': 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxxZ2Rya3dhYmNqcm5udGhscm1pIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYzMzIzMTQsImV4cCI6MjA5MTkwODMxNH0.0qhUexm2vPc-wDnX-G7w5Gg82Y2_Jow_v-9kWqL29AQ',
+            'Authorization': `Bearer ${session.access_token}`,
+            'Content-Type': 'application/json',
+          }
+        }
+      )
+      clearTimeout(timeout)
+
+      if (!resp.ok) throw new Error(`Profile fetch failed: ${resp.status}`)
+      const rows = await resp.json()
+      if (rows.length > 0) {
+        setProfile(rows[0] as UserProfile)
+      }
     } catch (error) {
       console.error('Error fetching user profile:', error)
       setProfile(null)
