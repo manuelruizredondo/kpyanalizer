@@ -64,4 +64,19 @@ export interface AnalysisResult {
   totalSelectors: number
   totalDeclarations: number
   uniqueDeclarations: number
+
+  // New metrics
+  maxSpecificity: [number, number, number]
+  avgSpecificity: number
+  deepestNesting: number
+  universalSelectorCount: number
+  attributeSelectorCount: number
+  pseudoClassCount: number
+  pseudoElementCount: number
+  vendorPrefixCount: number
+  shorthandCount: number
+  longhandCount: number
+
+  // Complexity summary
+  complexityRating: 'low' | 'medium' | 'high' | 'critical'
 }

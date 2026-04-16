@@ -2,19 +2,65 @@ import { HealthScore } from "./HealthScore"
 import { MetricCard } from "./MetricCard"
 import type { AnalysisResult } from "@/types/analysis"
 import {
-  Hash, AtSign, AlertTriangle, Copy, Palette, Type, Ruler,
-  Layers, Monitor, Play, FileText, Variable, Percent, Code
+  Hash, AtSign, AlertTriangle, Copy,
+  Layers, Monitor, Play, FileText, Variable, Percent, Code, Zap, Package
 } from "lucide-react"
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, Legend
 } from "recharts"
+import { Card, CardContent } from "@/components/ui/card"
+import { cn } from "@/lib/utils"
 
 interface OverviewTabProps {
   result: AnalysisResult
 }
 
-const PIE_COLORS = ["#3b82f6", "#ef4444", "#f59e0b", "#10b981", "#8b5cf6"]
+// App palette colors
+const COLORS = {
+  green: "#006c48",
+  lightGreen1: "#2a9d6e",
+  lightGreen2: "#5cc49a",
+  yellow: "#a67c00",
+  red: "#9e2b25",
+  darkText: "#1a2e23",
+  mutedText: "#3d5a4a",
+  lightBg: "#f8f9fa",
+  lightBg2: "#f0f2f1",
+}
+
+const PIE_COLORS = [COLORS.lightGreen1, COLORS.yellow, COLORS.red, "#8b5cf6", "#10b981"]
+
+function getComplexityColor(rating: string) {
+  switch (rating) {
+    case "low":
+      return { bg: "bg-green-50", text: "text-green-700", badge: "bg-green-200 text-green-800" }
+    case "medium":
+      return { bg: "bg-yellow-50", text: "text-yellow-700", badge: "bg-yellow-200 text-yellow-800" }
+    case "high":
+      return { bg: "bg-orange-50", text: "text-orange-700", badge: "bg-orange-200 text-orange-800" }
+    case "critical":
+      return { bg: "bg-red-50", text: "text-red-700", badge: "bg-red-200 text-red-800" }
+  }
+}
+
+function getComplexityLabel(rating: string) {
+  switch (rating) {
+    case "low": return "Baja"
+    case "medium": return "Media"
+    case "high": return "Alta"
+    case "critical": return "Crítica"
+  }
+}
+
+function getComplexityExplanation(rating: string) {
+  switch (rating) {
+    case "low": return "CSS bien estructurado con buenas prácticas"
+    case "medium": return "CSS moderadamente complejo, considera optimizaciones"
+    case "high": return "CSS complejo, se recomienda refactorización"
+    case "critical": return "CSS muy complejo, refactorización urgente"
+  }
+}
 
 export function OverviewTab({ result }: OverviewTabProps) {
   const specificityData = getSpecificityBuckets(result)
@@ -26,39 +72,107 @@ export function OverviewTab({ result }: OverviewTabProps) {
     { name: "!important", value: result.importantCount },
   ].filter(d => d.value > 0)
 
+  const shorthandRatio = result.shorthandCount + result.longhandCount > 0
+    ? (result.shorthandCount / (result.shorthandCount + result.longhandCount)) * 100
+    : 0
+
+  const summary = `${result.totalSelectors} selectores, ${result.totalDeclarations} declaraciones, ${(result.reuseRatio * 100).toFixed(0)}% reutilización`
+
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-1 lg:grid-cols-[auto_1fr] gap-6">
+      {/* Top Section: Health Score + Complexity */}
+      <div className="grid grid-cols-1 lg:grid-cols-[auto_1fr_auto] gap-6 items-start">
         <HealthScore score={result.healthScore} />
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
-          <MetricCard label="Peso" value={`${(result.fileSize / 1024).toFixed(1)} KB`} icon={FileText} />
-          <MetricCard label="Lineas" value={result.lineCount} icon={Code} />
-          <MetricCard label="Clases" value={result.classCount} icon={Hash} />
-          <MetricCard label="IDs" value={result.idCount} icon={AtSign} variant={result.idCount > 5 ? "warning" : "default"} />
-          <MetricCard label="!important" value={result.importantCount} icon={AlertTriangle} variant={result.importantCount > 5 ? "danger" : result.importantCount > 0 ? "warning" : "default"} />
-          <MetricCard label="Selectores dup." value={result.duplicateSelectors.length} icon={Copy} variant={result.duplicateSelectors.length > 10 ? "danger" : result.duplicateSelectors.length > 0 ? "warning" : "default"} />
-          <MetricCard label="Colores HC" value={result.colors.length} icon={Palette} />
-          <MetricCard label="Font sizes HC" value={result.fontSizes.length} icon={Type} />
-          <MetricCard label="Spacing HC" value={result.spacingValues.length} icon={Ruler} />
-          <MetricCard label="Z-index HC" value={result.zIndexValues.length} icon={Layers} />
-          <MetricCard label="Media queries" value={result.mediaQueries.length} icon={Monitor} />
-          <MetricCard label="Keyframes" value={result.keyframes.length} icon={Play} />
-          <MetricCard label="CSS Variables" value={result.variableCount} icon={Variable} variant="success" />
-          <MetricCard label="Ratio reutilizacion" value={`${(result.reuseRatio * 100).toFixed(0)}%`} icon={Percent} description={`${result.uniqueDeclarations} unicas / ${result.totalDeclarations} total`} />
+
+        <div className="flex flex-col justify-center gap-2">
+          <p className="text-sm font-medium text-muted-foreground">Resumen</p>
+          <p className="text-base font-semibold text-foreground">{summary}</p>
+        </div>
+
+        {/* Complexity Badge */}
+        <div className={cn("p-4 rounded-xl", getComplexityColor(result.complexityRating)?.bg)}>
+          <p className="text-xs font-medium text-muted-foreground mb-2">Complejidad</p>
+          <div className={cn("px-3 py-1.5 rounded-md text-sm font-semibold text-center mb-2", getComplexityColor(result.complexityRating)?.badge)}>
+            {getComplexityLabel(result.complexityRating)}
+          </div>
+          <p className="text-xs text-muted-foreground">{getComplexityExplanation(result.complexityRating)}</p>
         </div>
       </div>
 
+      {/* Metrics Grid - 6 columns */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+        {/* File & Structure */}
+        <MetricCard label="Peso" value={`${(result.fileSize / 1024).toFixed(1)} KB`} icon={FileText} />
+        <MetricCard label="Líneas" value={result.lineCount} icon={Code} />
+        <MetricCard label="Selectores" value={result.totalSelectors} icon={Hash} />
+        <MetricCard label="Declaraciones" value={result.totalDeclarations} icon={Zap} />
+        <MetricCard label="Decl. únicas" value={result.uniqueDeclarations} icon={Package} />
+        <MetricCard label="Reutilización" value={`${(result.reuseRatio * 100).toFixed(0)}%`} icon={Percent} />
+
+        {/* Selectors & IDs */}
+        <MetricCard label="Clases" value={result.classCount} icon={Hash} variant="success" />
+        <MetricCard label="IDs" value={result.idCount} icon={AtSign} variant={result.idCount > 5 ? "danger" : "default"} />
+        <MetricCard label="!important" value={result.importantCount} icon={AlertTriangle} variant={result.importantCount > 5 ? "danger" : result.importantCount > 0 ? "warning" : "default"} />
+        <MetricCard label="Selectores univ." value={result.universalSelectorCount} icon={Zap} variant={result.universalSelectorCount > 10 ? "warning" : "default"} />
+        <MetricCard label="Selectores attr." value={result.attributeSelectorCount} icon={Hash} />
+        <MetricCard label="Pseudo-clases" value={result.pseudoClassCount} icon={Code} />
+
+        {/* Pseudo-elements & Vendor */}
+        <MetricCard label="Pseudo-elem." value={result.pseudoElementCount} icon={Code} />
+        <MetricCard label="Prefijos vendor" value={result.vendorPrefixCount} icon={AlertTriangle} variant={result.vendorPrefixCount > 10 ? "warning" : "default"} />
+        <MetricCard label="Shorthand" value={result.shorthandCount} icon={Package} variant="success" />
+        <MetricCard label="Longhand" value={result.longhandCount} icon={Code} />
+        <MetricCard label="Variables CSS" value={result.variableCount} icon={Variable} variant="success" />
+        <MetricCard label="Media queries" value={result.mediaQueries.length} icon={Monitor} />
+
+        {/* Specificity */}
+        <MetricCard label="Max especif." value={`${result.maxSpecificity[0]},${result.maxSpecificity[1]},${result.maxSpecificity[2]}`} icon={Zap} variant={result.maxSpecificity[0] > 0 ? "danger" : "default"} />
+        <MetricCard label="Prom. especif." value={result.avgSpecificity.toFixed(1)} icon={Code} />
+        <MetricCard label="Anidamiento" value={result.deepestNesting} icon={Layers} />
+        <MetricCard label="Duplicados sel." value={result.duplicateSelectors.length} icon={Copy} variant={result.duplicateSelectors.length > 10 ? "danger" : result.duplicateSelectors.length > 0 ? "warning" : "default"} />
+        <MetricCard label="Duplicados decl." value={result.duplicateDeclarations.length} icon={Copy} variant={result.duplicateDeclarations.length > 10 ? "danger" : result.duplicateDeclarations.length > 0 ? "warning" : "default"} />
+        <MetricCard label="Keyframes" value={result.keyframes.length} icon={Play} />
+      </div>
+
+      {/* Shorthand Efficiency Bar */}
+      <Card>
+        <CardContent className="p-4">
+          <h4 className="text-sm font-semibold mb-3">Eficiencia Shorthand vs Longhand</h4>
+          <div className="space-y-2">
+            <div className="flex items-center gap-4">
+              <div className="flex-1">
+                <div className="h-6 bg-gray-200 rounded-full overflow-hidden flex">
+                  <div
+                    className="bg-green-500 transition-all"
+                    style={{ width: `${shorthandRatio}%` }}
+                  />
+                  <div
+                    className="bg-orange-400"
+                    style={{ width: `${100 - shorthandRatio}%` }}
+                  />
+                </div>
+              </div>
+            </div>
+            <div className="flex justify-between text-xs text-muted-foreground">
+              <span>Shorthand: {result.shorthandCount} ({shorthandRatio.toFixed(0)}%)</span>
+              <span>Longhand: {result.longhandCount} ({(100 - shorthandRatio).toFixed(0)}%)</span>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Charts Section */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {specificityData.length > 0 && (
           <div className="rounded-lg border p-4">
-            <h4 className="text-sm font-semibold mb-4">Distribucion de Especificidad</h4>
+            <h4 className="text-sm font-semibold mb-4">Distribución de Especificidad</h4>
             <ResponsiveContainer width="100%" height={250}>
               <BarChart data={specificityData}>
                 <CartesianGrid strokeDasharray="3 3" className="opacity-30" />
                 <XAxis dataKey="name" tick={{ fontSize: 11 }} />
                 <YAxis tick={{ fontSize: 11 }} />
                 <Tooltip />
-                <Bar dataKey="count" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="count" fill={COLORS.lightGreen1} radius={[4, 4, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </div>

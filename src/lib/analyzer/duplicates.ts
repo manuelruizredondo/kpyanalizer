@@ -8,10 +8,29 @@ export interface DuplicateResults {
   mediaQueries: MediaQueryInfo[]
   keyframes: KeyframeInfo[]
   uniqueDeclarations: number
+  deepestNesting: number
 }
 
 // Selectors to exclude from duplicate detection (common structural selectors)
 const IGNORED_SELECTORS = new Set([':root', '*', 'html', 'body'])
+
+function calculateMaxNestingDepth(node: CssNode, depth: number = 0): number {
+  let maxDepth = depth
+
+  const child = node.children?.head
+  if (child) {
+    let current: any = child
+    while (current) {
+      if (current.data.type === "Rule" || current.data.type === "Atrule") {
+        const childDepth = calculateMaxNestingDepth(current.data, depth + 1)
+        maxDepth = Math.max(maxDepth, childDepth)
+      }
+      current = current.next
+    }
+  }
+
+  return maxDepth
+}
 
 export function extractDuplicates(ast: CssNode): DuplicateResults {
   const selectorMap = new Map<string, { line: number; column: number; selector: string }[]>()
@@ -22,9 +41,16 @@ export function extractDuplicates(ast: CssNode): DuplicateResults {
 
   let currentSelector = ""
   let insideKeyframes = false
+  let deepestNesting = 0
 
   csstree.walk(ast, {
     enter(node: import("css-tree").CssNode) {
+      // Track nesting depth for @media and @supports rules
+      if ((node.type === "Atrule" || node.type === "Rule") && node.children) {
+        const depth = calculateMaxNestingDepth(node)
+        deepestNesting = Math.max(deepestNesting, depth)
+      }
+
       // Track when we enter a @keyframes block
       if (node.type === "Atrule") {
         const name = node.name.toLowerCase()
@@ -140,5 +166,6 @@ export function extractDuplicates(ast: CssNode): DuplicateResults {
     mediaQueries: mediaQueries.sort((a, b) => b.count - a.count),
     keyframes: keyframeList,
     uniqueDeclarations: uniqueDecls.size,
+    deepestNesting,
   }
 }

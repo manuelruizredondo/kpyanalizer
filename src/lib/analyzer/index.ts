@@ -2,8 +2,8 @@ import { parseCss } from "../css-parser"
 import { extractBasicMetrics } from "./metrics"
 import { extractHardcoded } from "./hardcoded"
 import { extractDuplicates } from "./duplicates"
-import { extractSpecificity } from "./specificity"
-import { computeHealthScore } from "./health-score"
+import { extractSpecificity, computeSpecificityStats } from "./specificity"
+import { computeHealthScore, getComplexityRating } from "./health-score"
 import type { AnalysisResult } from "@/types/analysis"
 
 export function analyzeCss(css: string): AnalysisResult {
@@ -12,6 +12,7 @@ export function analyzeCss(css: string): AnalysisResult {
   const hardcoded = extractHardcoded(ast)
   const dupes = extractDuplicates(ast)
   const specificity = extractSpecificity(ast)
+  const specificityStats = computeSpecificityStats(specificity)
 
   const fileSize = new Blob([css]).size
   const lineCount = css.split("\n").length
@@ -41,9 +42,20 @@ export function analyzeCss(css: string): AnalysisResult {
     totalSelectors: basic.totalSelectors,
     totalDeclarations: basic.totalDeclarations,
     uniqueDeclarations: dupes.uniqueDeclarations,
+    maxSpecificity: specificityStats.max,
+    avgSpecificity: specificityStats.avg,
+    deepestNesting: dupes.deepestNesting,
+    universalSelectorCount: basic.universalSelectorCount,
+    attributeSelectorCount: basic.attributeSelectorCount,
+    pseudoClassCount: basic.pseudoClassCount,
+    pseudoElementCount: basic.pseudoElementCount,
+    vendorPrefixCount: basic.vendorPrefixCount,
+    shorthandCount: basic.shorthandCount,
+    longhandCount: basic.longhandCount,
   }
 
   const healthScore = computeHealthScore(partial)
+  const complexityRating = getComplexityRating(healthScore)
 
-  return { ...partial, healthScore }
+  return { ...partial, healthScore, complexityRating }
 }

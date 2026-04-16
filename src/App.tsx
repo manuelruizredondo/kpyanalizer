@@ -13,6 +13,7 @@ import { CssInput } from '@/components/input/CssInput'
 import { OverviewTab } from '@/components/overview/OverviewTab'
 import { HardcodedTab } from '@/components/hardcoded/HardcodedTab'
 import { DuplicatesTab } from '@/components/duplicates/DuplicatesTab'
+import { SpecificityTab } from '@/components/specificity/SpecificityTab'
 import { W3cTab } from '@/components/w3c/W3cTab'
 import { DesignSystemTab } from '@/components/designsystem/DesignSystemTab'
 import { useAnalysis } from '@/hooks/useAnalysis'
@@ -22,6 +23,7 @@ import {
   LayoutDashboard,
   Palette,
   Copy,
+  BarChart3,
   Globe,
   Component,
   Code,
@@ -29,7 +31,7 @@ import {
 } from 'lucide-react'
 
 function AnalyzePage() {
-  const { css, result, error: analysisError, analyze } = useAnalysis()
+  const { css, result, error: analysisError, isAnalyzing, analyze } = useAnalysis()
   const w3c = useW3cValidation()
   const ds = useDesignSystem()
   const [showSaveForm, setShowSaveForm] = useState(false)
@@ -151,7 +153,7 @@ function AnalyzePage() {
         )}
       </div>
 
-      <CssInput value={css} onChange={handleCssChange} />
+      <CssInput value={css} onChange={handleCssChange} isAnalyzing={isAnalyzing} />
 
       {analysisError && (
         <div className="rounded-md bg-destructive/10 p-3">
@@ -243,7 +245,7 @@ function AnalyzePage() {
 
       {result && (
         <Tabs defaultValue="overview" onValueChange={handleTabChange}>
-          <TabsList className="grid w-full grid-cols-5">
+          <TabsList className="grid w-full grid-cols-6">
             <TabsTrigger value="overview" className="gap-1.5 text-xs">
               <LayoutDashboard className="h-3.5 w-3.5" />
               <span className="hidden sm:inline">Resumen</span>
@@ -255,6 +257,10 @@ function AnalyzePage() {
             <TabsTrigger value="duplicates" className="gap-1.5 text-xs">
               <Copy className="h-3.5 w-3.5" />
               <span className="hidden sm:inline">Duplicados</span>
+            </TabsTrigger>
+            <TabsTrigger value="specificity" className="gap-1.5 text-xs">
+              <BarChart3 className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">Especificidad</span>
             </TabsTrigger>
             <TabsTrigger value="w3c" className="gap-1.5 text-xs">
               <Globe className="h-3.5 w-3.5" />
@@ -275,6 +281,9 @@ function AnalyzePage() {
             </TabsContent>
             <TabsContent value="duplicates">
               <DuplicatesTab result={result} />
+            </TabsContent>
+            <TabsContent value="specificity">
+              <SpecificityTab result={result} />
             </TabsContent>
             <TabsContent value="w3c">
               <W3cTab

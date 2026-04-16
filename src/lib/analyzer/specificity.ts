@@ -37,6 +37,12 @@ function computeSpecificity(selectorNode: CssNode): [number, number, number] {
   return [a, b, c]
 }
 
+export interface SpecificityStats {
+  max: [number, number, number]
+  avg: number
+  distribution: SpecificityEntry[]
+}
+
 export function extractSpecificity(ast: CssNode): SpecificityEntry[] {
   const entries: SpecificityEntry[] = []
 
@@ -55,4 +61,40 @@ export function extractSpecificity(ast: CssNode): SpecificityEntry[] {
   })
 
   return entries
+}
+
+export function computeSpecificityStats(entries: SpecificityEntry[]): SpecificityStats {
+  if (entries.length === 0) {
+    return {
+      max: [0, 0, 0],
+      avg: 0,
+      distribution: entries,
+    }
+  }
+
+  // Find max specificity
+  let max: [number, number, number] = [0, 0, 0]
+  let totalWeightedSum = 0
+
+  for (const entry of entries) {
+    const [a, b, c] = entry.specificity
+
+    // Compare tuples: a*100 + b*10 + c
+    const currentWeight = a * 100 + b * 10 + c
+    const maxWeight = max[0] * 100 + max[1] * 10 + max[2]
+
+    if (currentWeight > maxWeight) {
+      max = [a, b, c]
+    }
+
+    totalWeightedSum += currentWeight
+  }
+
+  const avg = entries.length > 0 ? Math.round(totalWeightedSum / entries.length) : 0
+
+  return {
+    max,
+    avg,
+    distribution: entries,
+  }
 }
