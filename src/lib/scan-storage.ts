@@ -155,9 +155,22 @@ export async function getScanDetail(scanId: string): Promise<ScanDetail> {
 }
 
 /**
+ * Ensure user has a valid session, throw if not
+ */
+async function ensureAuth() {
+  const { data: { user }, error } = await supabase.auth.getUser()
+  if (error || !user) {
+    throw new Error('Sesión expirada. Por favor, vuelve a iniciar sesión.')
+  }
+  return user
+}
+
+/**
  * Get all projects
  */
 export async function getProjects(): Promise<Project[]> {
+  await ensureAuth()
+
   const { data, error } = await supabase
     .from('projects')
     .select('*')
