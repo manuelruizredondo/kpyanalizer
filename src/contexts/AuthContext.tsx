@@ -33,25 +33,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (mounted) setLoading(false)
     }, 5000)
 
-    // Check for existing session - use getUser() to validate token with server
+    // Check for existing session - use getSession() (local) to avoid network hangs
     const checkSession = async () => {
       try {
-        const {
-          data: { user: validUser },
-          error: userError,
-        } = await supabase.auth.getUser()
+        const { data: { session }, error: sessionError } = await supabase.auth.getSession()
 
-        if (userError || !validUser) {
-          // Token invalid or expired - clear stale session
-          console.warn('Session invalid, clearing:', userError?.message)
-          await supabase.auth.signOut()
+        if (sessionError || !session) {
           if (mounted) {
             setUser(null)
             setProfile(null)
           }
         } else if (mounted) {
-          setUser(validUser)
-          await fetchUserProfile(validUser.id)
+          setUser(session.user)
+          await fetchUserProfile(session.user.id)
         }
       } catch (error) {
         console.error('Error checking session:', error)

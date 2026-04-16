@@ -184,13 +184,14 @@ export async function getLatestScanDetail(projectId: string): Promise<ScanDetail
 
 /**
  * Ensure user has a valid session, throw if not
+ * Uses getSession() (local) instead of getUser() (network) to avoid hangs
  */
 async function ensureAuth() {
-  const { data: { user }, error } = await supabase.auth.getUser()
-  if (error || !user) {
+  const { data: { session }, error } = await supabase.auth.getSession()
+  if (error || !session) {
     throw new Error('Sesión expirada. Por favor, vuelve a iniciar sesión.')
   }
-  return user
+  return session.user
 }
 
 /**

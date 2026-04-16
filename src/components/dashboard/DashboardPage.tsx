@@ -185,64 +185,48 @@ export function DashboardPage() {
       setLoading(true)
       setError(null)
 
-      // First check auth is valid with a short timeout
-      console.log('[Dashboard] Checking auth...')
-      const authTimeout = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('auth_timeout')), 6000)
-      )
-      try {
-        const { data: { user: u }, error: authErr } = await Promise.race([
-          supabase.auth.getUser(),
-          authTimeout,
-        ])
-        console.log('[Dashboard] Auth result:', u?.email, authErr?.message)
-        if (authErr || !u) {
-          setError('Tu sesión ha expirado. Vuelve a iniciar sesión.')
-          setLoading(false)
-          return
-        }
-      } catch (authE) {
-        console.error('[Dashboard] Auth check failed:', authE)
-        if (authE instanceof Error && authE.message === 'auth_timeout') {
-          setError('La verificación de sesión tardó demasiado. Recarga la página o vuelve a iniciar sesión.')
-        } else {
-          setError('Error al verificar la sesión.')
-        }
+      // Use getSession (local, no network) instead of getUser (network call that hangs)
+      console.log('[Dashboard] Checking local session...')
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session) {
+        setError('No hay sesión activa. Inicia sesión para continuar.')
         setLoading(false)
         return
       }
+      console.log('[Dashboard] Session found for:', session.user.email)
 
-      // Now fetch projects - try SDK first, fallback to REST
-      const queryTimeout = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('query_timeout')), 8000)
-      )
-
+      // Fetch projects via direct REST call (bypasses SDK issues)
+      console.log('[Dashboard] Fetching projects via REST...')
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), 10000)
       let projectsList: Project[]
       try {
-        console.log('[Dashboard] Fetching projects via SDK...')
-        const { data, error: queryErr } = await Promise.race([
-          supabase.from('projects').select('*').order('created_at', { ascending: false }),
-          queryTimeout,
-        ])
-        console.log('[Dashboard] SDK result:', data?.length, 'projects, error:', queryErr?.message)
-        if (queryErr) throw queryErr
-        projectsList = (data || []) as Project[]
-      } catch (sdkErr) {
-        // SDK timed out or failed - try direct REST as fallback
-        console.warn('[Dashboard] SDK query failed, trying REST fallback:', sdkErr)
-        const session = (await supabase.auth.getSession()).data.session
-        const restResp = await Promise.race([
-          fetch('https://lqgdrkwabcjrnnthlrmi.supabase.co/rest/v1/projects?select=*&order=created_at.desc', {
+        const restResp = await fetch(
+          'https://lqgdrkwabcjrnnthlrmi.supabase.co/rest/v1/projects?select=*&order=created_at.desc',
+          {
+            signal: controller.signal,
             headers: {
               'apikey': 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxxZ2Rya3dhYmNqcm5udGhscm1pIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYzMzIzMTQsImV4cCI6MjA5MTkwODMxNH0.0qhUexm2vPc-wDnX-G7w5Gg82Y2_Jow_v-9kWqL29AQ',
-              'Authorization': `Bearer ${session?.access_token}`,
+              'Authorization': `Bearer ${session.access_token}`,
               'Content-Type': 'application/json',
+              'Prefer': 'return=representation',
             }
-          }),
-          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('La conexión tardó demasiado. Verifica tu conexión a internet.')), 8000))
-        ])
-        if (!restResp.ok) throw new Error(`REST error: ${restResp.status}`)
+          }
+        )
+        clearTimeout(timeout)
+        console.log('[Dashboard] REST response status:', restResp.status)
+        if (!restResp.ok) {
+          const errText = await restResp.text()
+          throw new Error(`Error ${restResp.status}: ${errText}`)
+        }
         projectsList = await restResp.json()
+        console.log('[Dashboard] Got', projectsList.length, 'projects')
+      } catch (fetchErr) {
+        clearTimeout(timeout)
+        if (fetchErr instanceof DOMException && fetchErr.name === 'AbortError') {
+          throw new Error('La conexión con Supabase tardó demasiado. Verifica tu conexión a internet.')
+        }
+        throw fetchErr
       }
       setProjects(projectsList)
       if (projectsList.length > 0 && !selectedProjectId) {
@@ -263,45 +247,60 @@ export function DashboardPage() {
     }
   }, [selectedProjectId])
 
+  const restFetch = async (path: string) => {
+    const { data: { session } } = await supabase.auth.getSession()
+    const controller = new AbortController()
+    const t = setTimeout(() => controller.abort(), 10000)
+    const r = await fetch(`https://lqgdrkwabcjrnnthlrmi.supabase.co/rest/v1/${path}`, {
+      signal: controller.signal,
+      headers: {
+        'apikey': 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxxZ2Rya3dhYmNqcm5udGhscm1pIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYzMzIzMTQsImV4cCI6MjA5MTkwODMxNH0.0qhUexm2vPc-wDnX-G7w5Gg82Y2_Jow_v-9kWqL29AQ',
+        'Authorization': `Bearer ${session?.access_token}`,
+        'Content-Type': 'application/json',
+      }
+    })
+    clearTimeout(t)
+    if (!r.ok) throw new Error(`REST ${r.status}`)
+    return r.json()
+  }
+
   const loadScans = async (projectId: string) => {
     try {
       setScansLoading(true)
+      console.log('[Dashboard] Loading scans for project:', projectId)
 
-      // Fetch scans with timeout
-      let scansList: Scan[]
-      try {
-        const t = new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timeout')), 8000))
-        scansList = await Promise.race([getProjectScans(projectId), t])
-      } catch {
-        // REST fallback
-        const session = (await supabase.auth.getSession()).data.session
-        const r = await fetch(
-          `https://lqgdrkwabcjrnnthlrmi.supabase.co/rest/v1/scans?select=*&project_id=eq.${projectId}&order=created_at.desc`,
-          {
-            headers: {
-              'apikey': 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxxZ2Rya3dhYmNqcm5udGhscm1pIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYzMzIzMTQsImV4cCI6MjA5MTkwODMxNH0.0qhUexm2vPc-wDnX-G7w5Gg82Y2_Jow_v-9kWqL29AQ',
-              'Authorization': `Bearer ${session?.access_token}`,
-              'Content-Type': 'application/json',
-            }
-          }
-        )
-        scansList = r.ok ? await r.json() : []
-      }
-
+      const scansList: Scan[] = await restFetch(
+        `scans?select=*&project_id=eq.${projectId}&order=created_at.desc`
+      )
+      console.log('[Dashboard] Got', scansList.length, 'scans')
       setScans(scansList)
+
       if (scansList.length > 0) {
+        // Get latest scan detail
+        const latestScanId = scansList[0].id
         try {
-          const t2 = new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timeout')), 8000))
-          const detail = await Promise.race([getLatestScanDetail(projectId), t2])
-          setLatestDetail(detail)
-        } catch {
+          const details = await restFetch(
+            `scan_details?select=analysis_data,w3c_validation,ds_coverage&scan_id=eq.${latestScanId}`
+          )
+          if (details.length > 0) {
+            setLatestDetail({
+              ...scansList[0],
+              analysis_data: details[0].analysis_data || {},
+              w3c_validation: details[0].w3c_validation,
+              ds_coverage: details[0].ds_coverage,
+            } as ScanDetail)
+          } else {
+            setLatestDetail(null)
+          }
+        } catch (detailErr) {
+          console.warn('[Dashboard] Could not load scan details:', detailErr)
           setLatestDetail(null)
         }
       } else {
         setLatestDetail(null)
       }
     } catch (err) {
-      console.error('Error loading scans:', err)
+      console.error('[Dashboard] Error loading scans:', err)
       setScans([])
       setLatestDetail(null)
     } finally {
