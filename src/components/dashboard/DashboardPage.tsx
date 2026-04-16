@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useAuth } from '@/contexts/AuthContext'
+import { supabase } from '@/lib/supabase'
 import {
   getProjects,
   createProject,
@@ -187,10 +188,42 @@ export function DashboardPage() {
     try {
       setLoading(true)
       setError(null)
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('La conexión tardó demasiado. Verifica tu conexión a internet.')), 15000)
+
+      // First check auth is valid with a short timeout
+      const authTimeout = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('auth_timeout')), 6000)
       )
-      const projectsList = await Promise.race([getProjects(), timeoutPromise])
+      try {
+        const { data: { user: u }, error: authErr } = await Promise.race([
+          supabase.auth.getUser(),
+          authTimeout,
+        ])
+        if (authErr || !u) {
+          setError('Tu sesión ha expirado. Vuelve a iniciar sesión.')
+          setLoading(false)
+          return
+        }
+      } catch (authE) {
+        if (authE instanceof Error && authE.message === 'auth_timeout') {
+          setError('La verificación de sesión tardó demasiado. Recarga la página o vuelve a iniciar sesión.')
+        } else {
+          setError('Error al verificar la sesión.')
+        }
+        setLoading(false)
+        return
+      }
+
+      // Now fetch projects with its own timeout
+      const queryTimeout = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('La conexión tardó demasiado. Verifica tu conexión a internet.')), 10000)
+      )
+      const { data, error: queryErr } = await Promise.race([
+        supabase.from('projects').select('*').order('created_at', { ascending: false }),
+        queryTimeout,
+      ])
+
+      if (queryErr) throw queryErr
+      const projectsList = (data || []) as Project[]
       setProjects(projectsList)
       if (projectsList.length > 0 && !selectedProjectId) {
         setSelectedProjectId(projectsList[0].id)
