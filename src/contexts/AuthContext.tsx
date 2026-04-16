@@ -26,20 +26,27 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
+    let mounted = true
+
+    // Safety timeout - never stay loading more than 5s
+    const timeout = setTimeout(() => {
+      if (mounted) setLoading(false)
+    }, 5000)
+
     // Check for existing session
     const checkSession = async () => {
       try {
         const {
           data: { session },
         } = await supabase.auth.getSession()
-        if (session?.user) {
+        if (mounted && session?.user) {
           setUser(session.user)
           await fetchUserProfile(session.user.id)
         }
       } catch (error) {
         console.error('Error checking session:', error)
       } finally {
-        setLoading(false)
+        if (mounted) setLoading(false)
       }
     }
 
@@ -49,6 +56,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange(async (_event, session) => {
+      if (!mounted) return
       if (session?.user) {
         setUser(session.user)
         await fetchUserProfile(session.user.id)
@@ -60,6 +68,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     })
 
     return () => {
+      mounted = false
+      clearTimeout(timeout)
       subscription?.unsubscribe()
     }
   }, [])
