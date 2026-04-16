@@ -101,8 +101,24 @@ export function DesignSystemTab({
                     </Button>
                   </div>
                   <p className="text-xs text-muted-foreground">
-                    Introduce la URL del CSS de tu framework (ej. HolyGrail5, Bootstrap, Tailwind...)
+                    Introduce la URL del CSS de tu framework. Acceso rapido:
                   </p>
+                  <div className="flex flex-wrap gap-2 mt-1">
+                    <button
+                      type="button"
+                      className="text-xs px-2.5 py-1 rounded-md bg-[#e0f5ec] text-[#006c48] font-medium hover:bg-[#c5eadb] transition-colors"
+                      onClick={() => setUrlInput('https://hg5.netlify.app/output.css')}
+                    >
+                      HolyGrail5
+                    </button>
+                    <button
+                      type="button"
+                      className="text-xs px-2.5 py-1 rounded-md bg-[#f0f2f1] text-[#3d5a4a] font-medium hover:bg-[#e4e6e5] transition-colors"
+                      onClick={() => setUrlInput('https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css')}
+                    >
+                      Bootstrap 5
+                    </button>
+                  </div>
                 </CardContent>
               </Card>
             )}
