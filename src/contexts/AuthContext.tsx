@@ -103,10 +103,24 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }
 
   const signOut = async () => {
-    const { error } = await supabase.auth.signOut()
-    if (error) throw error
+    // Clear state immediately so the UI responds instantly
     setUser(null)
     setProfile(null)
+    // Clear localStorage manually in case signOut() hangs
+    try {
+      const storageKey = Object.keys(localStorage).find(k => k.startsWith('sb-') && k.endsWith('-auth-token'))
+      if (storageKey) localStorage.removeItem(storageKey)
+    } catch { /* ignore */ }
+    // Try to notify the server but don't block on it
+    try {
+      await Promise.race([
+        supabase.auth.signOut(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 3000)),
+      ])
+    } catch {
+      // If signOut fails/times out, session is already cleared locally
+      console.warn('Server signOut timed out, session cleared locally')
+    }
   }
 
   const value: AuthContextType = {
