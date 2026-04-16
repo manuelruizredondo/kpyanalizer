@@ -17,16 +17,14 @@ const IGNORED_SELECTORS = new Set([':root', '*', 'html', 'body'])
 function calculateMaxNestingDepth(node: CssNode, depth: number = 0): number {
   let maxDepth = depth
 
-  const child = node.children?.head
-  if (child) {
-    let current: any = child
-    while (current) {
-      if (current.data.type === "Rule" || current.data.type === "Atrule") {
-        const childDepth = calculateMaxNestingDepth(current.data, depth + 1)
+  if ('children' in node && node.children) {
+    const children = node.children as { forEach: (cb: (child: CssNode) => void) => void }
+    children.forEach((child: CssNode) => {
+      if (child.type === "Rule" || child.type === "Atrule") {
+        const childDepth = calculateMaxNestingDepth(child, depth + 1)
         maxDepth = Math.max(maxDepth, childDepth)
       }
-      current = current.next
-    }
+    })
   }
 
   return maxDepth
@@ -46,7 +44,7 @@ export function extractDuplicates(ast: CssNode): DuplicateResults {
   csstree.walk(ast, {
     enter(node: import("css-tree").CssNode) {
       // Track nesting depth for @media and @supports rules
-      if ((node.type === "Atrule" || node.type === "Rule") && node.children) {
+      if ((node.type === "Atrule" || node.type === "Rule") && 'children' in node && node.children) {
         const depth = calculateMaxNestingDepth(node)
         deepestNesting = Math.max(deepestNesting, depth)
       }

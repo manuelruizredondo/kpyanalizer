@@ -3,8 +3,6 @@ import { useAuth } from '@/contexts/AuthContext'
 import { supabase } from '@/lib/supabase'
 import {
   createProject,
-  getProjectScans,
-  getLatestScanDetail,
   deleteScan,
   deleteProject,
 } from '@/lib/scan-storage'

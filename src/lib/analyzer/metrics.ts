@@ -65,8 +65,10 @@ export function extractBasicMetrics(ast: CssNode): BasicMetrics {
         case "IdSelector":
           idCount++
           break
-        case "Universal":
-          universalSelectorCount++
+        case "TypeSelector":
+          if (node.name === "*") {
+            universalSelectorCount++
+          }
           break
         case "AttributeSelector":
           attributeSelectorCount++
