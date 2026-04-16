@@ -190,6 +190,7 @@ export function DashboardPage() {
       setError(null)
 
       // First check auth is valid with a short timeout
+      console.log('[Dashboard] Checking auth...')
       const authTimeout = new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error('auth_timeout')), 6000)
       )
@@ -198,12 +199,14 @@ export function DashboardPage() {
           supabase.auth.getUser(),
           authTimeout,
         ])
+        console.log('[Dashboard] Auth result:', u?.email, authErr?.message)
         if (authErr || !u) {
           setError('Tu sesión ha expirado. Vuelve a iniciar sesión.')
           setLoading(false)
           return
         }
       } catch (authE) {
+        console.error('[Dashboard] Auth check failed:', authE)
         if (authE instanceof Error && authE.message === 'auth_timeout') {
           setError('La verificación de sesión tardó demasiado. Recarga la página o vuelve a iniciar sesión.')
         } else {
@@ -213,17 +216,38 @@ export function DashboardPage() {
         return
       }
 
-      // Now fetch projects with its own timeout
+      // Now fetch projects - try SDK first, fallback to REST
       const queryTimeout = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('La conexión tardó demasiado. Verifica tu conexión a internet.')), 10000)
+        setTimeout(() => reject(new Error('query_timeout')), 8000)
       )
-      const { data, error: queryErr } = await Promise.race([
-        supabase.from('projects').select('*').order('created_at', { ascending: false }),
-        queryTimeout,
-      ])
 
-      if (queryErr) throw queryErr
-      const projectsList = (data || []) as Project[]
+      let projectsList: Project[]
+      try {
+        console.log('[Dashboard] Fetching projects via SDK...')
+        const { data, error: queryErr } = await Promise.race([
+          supabase.from('projects').select('*').order('created_at', { ascending: false }),
+          queryTimeout,
+        ])
+        console.log('[Dashboard] SDK result:', data?.length, 'projects, error:', queryErr?.message)
+        if (queryErr) throw queryErr
+        projectsList = (data || []) as Project[]
+      } catch (sdkErr) {
+        // SDK timed out or failed - try direct REST as fallback
+        console.warn('[Dashboard] SDK query failed, trying REST fallback:', sdkErr)
+        const session = (await supabase.auth.getSession()).data.session
+        const restResp = await Promise.race([
+          fetch('https://lqgdrkwabcjrnnthlrmi.supabase.co/rest/v1/projects?select=*&order=created_at.desc', {
+            headers: {
+              'apikey': 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxxZ2Rya3dhYmNqcm5udGhscm1pIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYzMzIzMTQsImV4cCI6MjA5MTkwODMxNH0.0qhUexm2vPc-wDnX-G7w5Gg82Y2_Jow_v-9kWqL29AQ',
+              'Authorization': `Bearer ${session?.access_token}`,
+              'Content-Type': 'application/json',
+            }
+          }),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('La conexión tardó demasiado. Verifica tu conexión a internet.')), 8000))
+        ])
+        if (!restResp.ok) throw new Error(`REST error: ${restResp.status}`)
+        projectsList = await restResp.json()
+      }
       setProjects(projectsList)
       if (projectsList.length > 0 && !selectedProjectId) {
         setSelectedProjectId(projectsList[0].id)
@@ -246,14 +270,37 @@ export function DashboardPage() {
   const loadScans = async (projectId: string) => {
     try {
       setScansLoading(true)
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('Tiempo de espera agotado al cargar escaneos.')), 15000)
-      )
-      const scansList = await Promise.race([getProjectScans(projectId), timeoutPromise])
+
+      // Fetch scans with timeout
+      let scansList: Scan[]
+      try {
+        const t = new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timeout')), 8000))
+        scansList = await Promise.race([getProjectScans(projectId), t])
+      } catch {
+        // REST fallback
+        const session = (await supabase.auth.getSession()).data.session
+        const r = await fetch(
+          `https://lqgdrkwabcjrnnthlrmi.supabase.co/rest/v1/scans?select=*&project_id=eq.${projectId}&order=created_at.desc`,
+          {
+            headers: {
+              'apikey': 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxxZ2Rya3dhYmNqcm5udGhscm1pIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYzMzIzMTQsImV4cCI6MjA5MTkwODMxNH0.0qhUexm2vPc-wDnX-G7w5Gg82Y2_Jow_v-9kWqL29AQ',
+              'Authorization': `Bearer ${session?.access_token}`,
+              'Content-Type': 'application/json',
+            }
+          }
+        )
+        scansList = r.ok ? await r.json() : []
+      }
+
       setScans(scansList)
       if (scansList.length > 0) {
-        const detail = await Promise.race([getLatestScanDetail(projectId), timeoutPromise])
-        setLatestDetail(detail)
+        try {
+          const t2 = new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timeout')), 8000))
+          const detail = await Promise.race([getLatestScanDetail(projectId), t2])
+          setLatestDetail(detail)
+        } catch {
+          setLatestDetail(null)
+        }
       } else {
         setLatestDetail(null)
       }
@@ -411,10 +458,24 @@ export function DashboardPage() {
   if (error) {
     return (
       <div className="flex flex-col items-center justify-center py-24 gap-4">
+        <AlertTriangle size={32} className="text-[#9e2b25]" />
         <p className="text-red-600 text-center max-w-md">{error}</p>
-        <Button onClick={loadProjects} variant="outline" size="sm">
-          Reintentar
-        </Button>
+        <div className="flex gap-3">
+          <Button onClick={loadProjects} variant="outline" size="sm">
+            Reintentar
+          </Button>
+          <Button
+            onClick={async () => {
+              await supabase.auth.signOut()
+              window.location.reload()
+            }}
+            variant="outline"
+            size="sm"
+            className="text-[#9e2b25] border-[#9e2b25]"
+          >
+            Cerrar sesion y reiniciar
+          </Button>
+        </div>
       </div>
     )
   }
