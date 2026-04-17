@@ -288,7 +288,7 @@ function AnalyzePage() {
               <OverviewTab result={result} />
             </TabsContent>
             <TabsContent value="hardcoded">
-              <HardcodedTab result={result} />
+              <HardcodedTab result={result} dsCoverage={ds.coverage} dsTokens={ds.tokens} />
             </TabsContent>
             <TabsContent value="duplicates">
               <DuplicatesTab result={result} />

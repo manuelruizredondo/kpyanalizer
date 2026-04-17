@@ -5,6 +5,8 @@ export interface DsTokenSet {
   fontSizes: string[]
   spacing: string[]
   zIndex: number[]
+  /** Map from normalized value → CSS variable name, e.g. "#ff0000" → "--color-primary" */
+  varNames: Record<string, string>
 }
 
 export interface DsMismatch {

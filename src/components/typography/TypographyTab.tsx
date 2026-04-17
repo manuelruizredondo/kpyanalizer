@@ -583,6 +583,152 @@ export function TypographyTab({ result }: TypographyTabProps) {
       </Card>
 
       {/* ══════════════════════════════════════════════════════════════
+           FONT WEIGHT UNIFICATION TABLE
+         ══════════════════════════════════════════════════════════════ */}
+      {(() => {
+        // DS weight consolidation rules:
+        // 100 (Thin) ← stays
+        // 200 (Extra Light) → 100
+        // 300 (Light) → 100
+        // 400 (Normal) ← stays (DS approved)
+        // 500 (Medium) → 400
+        // 600 (Semi Bold) ← stays
+        // 700 (Bold) ← stays (DS approved)
+        // 800 (Extra Bold) → 700
+        // 900 (Black) → 700
+        const DS_WEIGHT_TARGET: Record<string, string | null> = {
+          "100": null,       // OK — DS weight
+          "200": "100",      // Extra Light → Thin
+          "300": "100",      // Light → Thin
+          "400": null,       // OK — DS weight
+          "500": "400",      // Medium → Normal
+          "600": null,       // OK — keep
+          "700": null,       // OK — DS weight
+          "800": "700",      // Extra Bold → Bold
+          "900": "700",      // Black → Bold
+        }
+
+        // Group weights by normalized value
+        const groups = new Map<string, { normalized: string; variants: { value: string; count: number }[]; totalCount: number }>()
+        for (const w of fontWeights) {
+          const key = w.normalized
+          if (!groups.has(key)) {
+            groups.set(key, { normalized: key, variants: [], totalCount: 0 })
+          }
+          const g = groups.get(key)!
+          g.variants.push({ value: w.value, count: w.count })
+          g.totalCount += w.count
+        }
+
+        const allGroups = [...groups.values()].sort((a, b) => {
+          const na = parseInt(a.normalized, 10)
+          const nb = parseInt(b.normalized, 10)
+          if (!isNaN(na) && !isNaN(nb)) return na - nb
+          return a.normalized.localeCompare(b.normalized)
+        })
+
+        if (allGroups.length === 0) return null
+
+        const actionsCount = allGroups.filter(g => {
+          const target = DS_WEIGHT_TARGET[g.normalized]
+          return target !== undefined && target !== null
+        }).length + allGroups.filter(g => g.variants.length > 1).length
+
+        return (
+          <Card>
+            <CardHeader className="pb-2">
+              <div className="flex items-center gap-1.5">
+                <CardTitle className="text-sm">Equivalencias y Acciones de Font-Weight</CardTitle>
+                <InfoTooltip text="Tabla de equivalencias con las acciones del Design System. Los pesos aprobados son 100 (Thin), 400 (Normal), 600 (Semi Bold) y 700 (Bold). El resto se debe consolidar." />
+              </div>
+              {actionsCount > 0 && (
+                <p className="text-xs text-[#9e2b25]">
+                  {actionsCount} accion{actionsCount !== 1 ? 'es' : ''} pendiente{actionsCount !== 1 ? 's' : ''} de unificacion
+                </p>
+              )}
+            </CardHeader>
+            <CardContent>
+              <div className="overflow-hidden rounded-lg border border-[#f0f2f1]">
+                <table className="w-full text-sm" style={{ tableLayout: 'fixed' }}>
+                  <colgroup>
+                    <col style={{ width: '60px' }} />
+                    <col style={{ width: '90px' }} />
+                    <col style={{ width: '140px' }} />
+                    <col style={{ width: '55px' }} />
+                    <col />
+                  </colgroup>
+                  <thead>
+                    <tr className="bg-[#f8f9fa]">
+                      <th className="text-center py-2 px-2 text-[11px] font-semibold text-[#1a2e23]">Peso</th>
+                      <th className="text-left py-2 px-2 text-[11px] font-semibold text-[#1a2e23]">Nombre</th>
+                      <th className="text-left py-2 px-2 text-[11px] font-semibold text-[#1a2e23]">Valores CSS</th>
+                      <th className="text-center py-2 px-2 text-[11px] font-semibold text-[#1a2e23]">Usos</th>
+                      <th className="text-left py-2 px-2 text-[11px] font-semibold text-[#1a2e23]">Accion DS</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {allGroups.map((g) => {
+                      const hasDupes = g.variants.length > 1
+                      const dsTarget = DS_WEIGHT_TARGET[g.normalized]
+                      const needsConsolidation = dsTarget !== undefined && dsTarget !== null
+
+                      return (
+                        <tr key={g.normalized} className={`border-t border-[#f0f2f1] ${needsConsolidation ? 'bg-[#fef2f1]/30' : hasDupes ? 'bg-[#fef6e0]/30' : ''}`}>
+                          <td className="py-2 px-2 text-center">
+                            <div
+                              className={`inline-block w-8 text-center rounded px-1 py-0.5 text-[10px] font-semibold text-white ${needsConsolidation ? 'line-through opacity-60' : ''}`}
+                              style={{ backgroundColor: getWeightBarColor(g.normalized) }}
+                            >
+                              {g.normalized}
+                            </div>
+                          </td>
+                          <td className={`py-2 px-2 text-[11px] ${needsConsolidation ? 'text-[#9e2b25] line-through' : 'text-[#3d5a4a]'}`}>
+                            {getWeightLabel(g.normalized)}
+                          </td>
+                          <td className="py-2 px-2">
+                            <div className="flex flex-wrap gap-1">
+                              {g.variants.map((v, i) => (
+                                <span key={i} className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono ${
+                                  needsConsolidation ? 'bg-[#fef2f1] text-[#9e2b25]' : hasDupes ? 'bg-[#fef6e0] text-[#a67c00]' : 'bg-[#f0f2f1] text-[#1a2e23]'
+                                }`}>
+                                  {v.value}
+                                  <span className="text-[9px] opacity-60">{v.count}x</span>
+                                </span>
+                              ))}
+                            </div>
+                          </td>
+                          <td className="py-2 px-2 text-center text-[11px] font-semibold text-[#1a2e23] tabular-nums">{g.totalCount}</td>
+                          <td className="py-2 px-2">
+                            {needsConsolidation ? (
+                              <div className="flex items-center gap-1.5">
+                                <Badge className="bg-[#fef2f1] text-[#9e2b25] text-[9px] shrink-0">Consolidar</Badge>
+                                <span className="text-[10px] text-[#9e2b25]">
+                                  → pasar a <strong>{dsTarget}</strong> ({getWeightLabel(dsTarget!)})
+                                </span>
+                              </div>
+                            ) : hasDupes ? (
+                              <div className="flex items-center gap-1.5">
+                                <Badge className="bg-[#fef6e0] text-[#a67c00] text-[9px] shrink-0">Unificar</Badge>
+                                <span className="text-[10px] text-[#a67c00]">
+                                  → usar solo <strong>{g.normalized}</strong>
+                                </span>
+                              </div>
+                            ) : (
+                              <Badge className="bg-[#e0f5ec] text-[#006c48] text-[9px]">OK</Badge>
+                            )}
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </CardContent>
+          </Card>
+        )
+      })()}
+
+      {/* ══════════════════════════════════════════════════════════════
            FONT SIZES SCALE
          ══════════════════════════════════════════════════════════════ */}
       {fontSizes.length > 0 && (

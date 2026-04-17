@@ -10,28 +10,33 @@ export function parseDsTokens(content: string, fileName: string): DsTokenSet {
 
 function parseJsonTokens(content: string): DsTokenSet {
   const data = JSON.parse(content)
-  const tokens: DsTokenSet = { colors: [], fontSizes: [], spacing: [], zIndex: [] }
+  const tokens: DsTokenSet = { colors: [], fontSizes: [], spacing: [], zIndex: [], varNames: {} }
 
-  function extractValues(obj: Record<string, unknown>, category?: string): void {
+  function extractValues(obj: Record<string, unknown>, category?: string, path: string[] = []): void {
     for (const [key, value] of Object.entries(obj)) {
       if (typeof value === "object" && value !== null && !Array.isArray(value)) {
         const inferredCategory = inferCategory(key) ?? category
-        extractValues(value as Record<string, unknown>, inferredCategory)
+        extractValues(value as Record<string, unknown>, inferredCategory, [...path, key])
       } else if (typeof value === "string" || typeof value === "number") {
         const cat = inferCategory(key) ?? category
-        const val = String(value)
+        const val = String(value).toLowerCase()
+        const varName = [...path, key].join(".")
         switch (cat) {
           case "color":
-            tokens.colors.push(val.toLowerCase())
+            tokens.colors.push(val)
+            tokens.varNames[val] = varName
             break
           case "fontSize":
-            tokens.fontSizes.push(val.toLowerCase())
+            tokens.fontSizes.push(val)
+            tokens.varNames[val] = varName
             break
           case "spacing":
-            tokens.spacing.push(val.toLowerCase())
+            tokens.spacing.push(val)
+            tokens.varNames[val] = varName
             break
           case "zIndex":
             tokens.zIndex.push(Number(value))
+            tokens.varNames[val] = varName
             break
         }
       }
@@ -43,7 +48,28 @@ function parseJsonTokens(content: string): DsTokenSet {
 }
 
 function parseCssVarTokens(content: string): DsTokenSet {
-  const tokens: DsTokenSet = { colors: [], fontSizes: [], spacing: [], zIndex: [] }
+  const tokens: DsTokenSet = { colors: [], fontSizes: [], spacing: [], zIndex: [], varNames: {} }
+
+  function addToken(cat: string, varName: string, value: string) {
+    switch (cat) {
+      case "color":
+        tokens.colors.push(value)
+        tokens.varNames[value] = varName
+        break
+      case "fontSize":
+        tokens.fontSizes.push(value)
+        tokens.varNames[value] = varName
+        break
+      case "spacing":
+        tokens.spacing.push(value)
+        tokens.varNames[value] = varName
+        break
+      case "zIndex":
+        tokens.zIndex.push(Number(value))
+        tokens.varNames[value] = varName
+        break
+    }
+  }
 
   try {
     const ast = parseCss(content)
@@ -53,45 +79,18 @@ function parseCssVarTokens(content: string): DsTokenSet {
           const name = node.property.toLowerCase()
           const value = csstree.generate(node.value).trim().toLowerCase()
           const cat = inferCategory(name)
-          switch (cat) {
-            case "color":
-              tokens.colors.push(value)
-              break
-            case "fontSize":
-              tokens.fontSizes.push(value)
-              break
-            case "spacing":
-              tokens.spacing.push(value)
-              break
-            case "zIndex":
-              tokens.zIndex.push(Number(value))
-              break
-          }
+          if (cat) addToken(cat, node.property, value)
         }
       },
     })
   } catch {
-    // If parsing fails, try simple regex
     const varRegex = /--([\w-]+)\s*:\s*([^;]+)/g
     let match
     while ((match = varRegex.exec(content)) !== null) {
       const name = match[1].toLowerCase()
       const value = match[2].trim().toLowerCase()
       const cat = inferCategory(name)
-      switch (cat) {
-        case "color":
-          tokens.colors.push(value)
-          break
-        case "fontSize":
-          tokens.fontSizes.push(value)
-          break
-        case "spacing":
-          tokens.spacing.push(value)
-          break
-        case "zIndex":
-          tokens.zIndex.push(Number(value))
-          break
-      }
+      if (cat) addToken(cat, `--${match[1]}`, value)
     }
   }
 

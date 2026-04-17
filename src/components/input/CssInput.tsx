@@ -1,7 +1,7 @@
 import { useState } from "react"
 import { FileDropZone } from "./FileDropZone"
 import { Button } from "@/components/ui/button"
-import { FileCode, Trash2, Loader2, Globe, Download } from "lucide-react"
+import { FileCode, Trash2, Loader2, Globe, Download, ExternalLink } from "lucide-react"
 
 const CORS_PROXY = "https://lqgdrkwabcjrnnthlrmi.supabase.co/functions/v1/cors-proxy"
 
@@ -16,6 +16,7 @@ export function CssInput({ value, onChange, isAnalyzing }: CssInputProps) {
   const [urlInput, setUrlInput] = useState("")
   const [urlLoading, setUrlLoading] = useState(false)
   const [urlError, setUrlError] = useState<string | null>(null)
+  const [urlBlocked, setUrlBlocked] = useState(false)
 
   function handleTextChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
     const text = e.target.value
@@ -57,6 +58,7 @@ export function CssInput({ value, onChange, isAnalyzing }: CssInputProps) {
 
     setUrlLoading(true)
     setUrlError(null)
+    setUrlBlocked(false)
 
     try {
       const proxyUrl = `${CORS_PROXY}?url=${encodeURIComponent(url)}`
@@ -67,7 +69,21 @@ export function CssInput({ value, onChange, isAnalyzing }: CssInputProps) {
       clearTimeout(timeout)
 
       if (!resp.ok) {
-        throw new Error(`Error ${resp.status}: no se pudo descargar el CSS`)
+        // Check if the proxy returned a "blocked" flag
+        let blocked = false
+        try {
+          const json = await resp.json()
+          blocked = json.blocked === true
+          if (blocked) {
+            setUrlBlocked(true)
+            setUrlError(json.error || `El servidor bloquea descargas externas (${resp.status})`)
+            return
+          }
+          throw new Error(json.error || `Error ${resp.status}`)
+        } catch (jsonErr) {
+          if (blocked) return
+          throw new Error(`Error ${resp.status}: no se pudo descargar el CSS`)
+        }
       }
 
       const css = await resp.text()
@@ -84,6 +100,7 @@ export function CssInput({ value, onChange, isAnalyzing }: CssInputProps) {
       setLocalValue(css)
       onChange(css)
       setUrlError(null)
+      setUrlBlocked(false)
     } catch (e) {
       if (e instanceof DOMException && e.name === "AbortError") {
         setUrlError("Timeout: la descarga tardo demasiado (>30s)")
@@ -158,7 +175,50 @@ export function CssInput({ value, onChange, isAnalyzing }: CssInputProps) {
         </Button>
       </div>
       {urlError && (
-        <p className="text-xs text-[#9e2b25] bg-[#fef2f1] rounded px-3 py-1.5">{urlError}</p>
+        <div className="text-xs bg-[#fef2f1] rounded-lg px-3 py-2 space-y-2">
+          <p className="text-[#9e2b25]">{urlError}</p>
+          {urlBlocked && urlInput.trim() && (
+            <div className="space-y-2 pt-1 border-t border-[#9e2b25]/10">
+              <p className="text-[#3d5a4a]">
+                El servidor bloquea descargas desde servidores externos. Usa una de estas opciones:
+              </p>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => {
+                    // Create a temporary link with download attribute to force .css download
+                    const a = document.createElement("a")
+                    a.href = urlInput.trim()
+                    // Extract filename from URL
+                    const filename = urlInput.trim().split("/").pop()?.split("?")[0] || "styles.css"
+                    a.download = filename
+                    a.target = "_blank"
+                    a.rel = "noopener noreferrer"
+                    document.body.appendChild(a)
+                    a.click()
+                    document.body.removeChild(a)
+                  }}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-[#006c48] text-white rounded-md hover:bg-[#005a3a] transition-colors font-medium"
+                >
+                  <Download size={12} />
+                  Descargar .css
+                </button>
+                <span className="text-[#3d5a4a]">y arrastralo aqui</span>
+              </div>
+              <p className="text-[10px] text-[#3d5a4a]/70">
+                Si no se descarga, haz clic derecho en{" "}
+                <a
+                  href={urlInput.trim()}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="underline text-[#006c48]"
+                >
+                  este enlace
+                </a>
+                {" "}→ "Guardar enlace como..." → arrastra el archivo .css aqui.
+              </p>
+            </div>
+          )}
+        </div>
       )}
 
       {!localValue ? (

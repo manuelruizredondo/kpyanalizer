@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import { useAuth } from '@/contexts/AuthContext'
 import { supabase } from '@/lib/supabase'
 import {
@@ -54,9 +54,34 @@ import {
   XCircle,
   Bold,
   CheckCircle,
+  Grid3X3,
+  Box,
 } from 'lucide-react'
 
 const HG5_URL = 'https://hg5.netlify.app/output.css'
+
+// ─── Weight helpers (same as TypographyTab) ────────────────────
+function getWeightLabel(normalized: string): string {
+  const map: Record<string, string> = {
+    "100": "Thin", "200": "Extra Light", "300": "Light",
+    "400": "Normal", "500": "Medium", "600": "Semi Bold",
+    "700": "Bold", "800": "Extra Bold", "900": "Black",
+  }
+  return map[normalized] || normalized
+}
+function getWeightBarColor(normalized: string): string {
+  const n = parseInt(normalized, 10)
+  if (isNaN(n)) return '#3d5a4a'
+  if (n <= 300) return '#5cc49a'
+  if (n <= 500) return '#2a9d6e'
+  if (n <= 700) return '#006c48'
+  return '#1a2e23'
+}
+const DS_WEIGHT_TARGET: Record<string, string | null> = {
+  "100": null, "200": "100", "300": "100",
+  "400": null, "500": "400", "600": null,
+  "700": null, "800": "700", "900": "700",
+}
 
 // ─── Font classification (same logic as TypographyTab) ──────────
 const DS_FONT_KEYWORD = 'suisse'
@@ -207,6 +232,36 @@ function CoverageBar({ label, value, color }: { label: string; value: number; co
   )
 }
 
+// ─── Chart Title with Delta ────────────────────────────────────────
+// downIsGood = true → green if value went down, red if up (for errors, legacy counts)
+function ChartTitle({ title, tooltip, first, last, downIsGood = true }: {
+  title: string; tooltip: string; first?: number; last?: number; downIsGood?: boolean
+}) {
+  const hasDelta = first !== undefined && last !== undefined && first !== 0
+  const diff = hasDelta ? last! - first! : 0
+  const pct = hasDelta ? Math.round((diff / first!) * 100) : 0
+  const isGood = downIsGood ? diff <= 0 : diff >= 0
+
+  return (
+    <div className="flex items-center gap-2 mb-3">
+      <h3 className="text-sm font-semibold text-[#1a2e23]">{title}</h3>
+      {hasDelta && pct !== 0 && (
+        <span className={`inline-flex items-center gap-0.5 text-[11px] font-semibold px-1.5 py-0.5 rounded-full ${
+          isGood ? 'bg-[#e0f5ec] text-[#006c48]' : 'bg-[#fef2f1] text-[#9e2b25]'
+        }`}>
+          {pct > 0 ? '▲' : '▼'} {Math.abs(pct)}%
+        </span>
+      )}
+      {hasDelta && pct === 0 && diff === 0 && (
+        <span className="inline-flex items-center text-[11px] font-semibold px-1.5 py-0.5 rounded-full bg-[#f0f2f1] text-[#3d5a4a]">
+          = sin cambio
+        </span>
+      )}
+      <InfoTooltip text={tooltip} />
+    </div>
+  )
+}
+
 // ─── Main Component ─────────────────────────────────────────────────
 export function DashboardPage() {
   const { profile } = useAuth()
@@ -214,6 +269,7 @@ export function DashboardPage() {
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
   const [scans, setScans] = useState<Scan[]>([])
   const [latestDetail, setLatestDetail] = useState<ScanDetail | null>(null)
+  const [allDetails, setAllDetails] = useState<Map<string, ScanDetail>>(new Map())
   const [loading, setLoading] = useState(true)
   const [scansLoading, setScansLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -227,6 +283,7 @@ export function DashboardPage() {
   const [hg5Coverage, setHg5Coverage] = useState<FullDsCoverage | null>(null)
   const [hg5Loading, setHg5Loading] = useState(false)
   const [hg5Error, setHg5Error] = useState<string | null>(null)
+  const [showAllMismatches, setShowAllMismatches] = useState(false)
   const hg5FetchedRef = useRef(false)
 
   // ── Load projects ──
@@ -330,28 +387,37 @@ export function DashboardPage() {
       setScans(scansList)
 
       if (scansList.length > 0) {
-        // Get latest scan detail
-        const latestScanId = scansList[0].id
+        // Get ALL scan details for historical charts
+        const scanIds = scansList.map(s => s.id)
         try {
           const details = await restFetch(
-            `scan_details?select=analysis_data,w3c_validation,ds_coverage&scan_id=eq.${latestScanId}`
+            `scan_details?select=scan_id,analysis_data,w3c_validation,ds_coverage&scan_id=in.(${scanIds.join(',')})`
           )
-          if (details.length > 0) {
-            setLatestDetail({
-              ...scansList[0],
-              analysis_data: details[0].analysis_data || {},
-              w3c_validation: details[0].w3c_validation,
-              ds_coverage: details[0].ds_coverage,
-            } as ScanDetail)
-          } else {
-            setLatestDetail(null)
+          const detailMap = new Map<string, ScanDetail>()
+          for (const d of details) {
+            const scan = scansList.find(s => s.id === d.scan_id)
+            if (scan) {
+              detailMap.set(d.scan_id, {
+                ...scan,
+                analysis_data: d.analysis_data || {},
+                w3c_validation: d.w3c_validation,
+                ds_coverage: d.ds_coverage,
+              } as ScanDetail)
+            }
           }
+          setAllDetails(detailMap)
+
+          // Set latest detail
+          const latestD = detailMap.get(scansList[0].id)
+          setLatestDetail(latestD || null)
         } catch (detailErr) {
           console.warn('[Dashboard] Could not load scan details:', detailErr)
           setLatestDetail(null)
+          setAllDetails(new Map())
         }
       } else {
         setLatestDetail(null)
+        setAllDetails(new Map())
       }
     } catch (err) {
       console.error('[Dashboard] Error loading scans:', err)
@@ -485,6 +551,60 @@ export function DashboardPage() {
     date: new Date(s.created_at).toLocaleDateString('es-ES', { day: '2-digit', month: 'short' }),
     ratio: +(s.reuse_ratio * 100).toFixed(1),
   }))
+
+  // ── Legacy reduction chart data (from scan details) ──
+  const legacyChartData = useMemo(() => {
+    if (chronologicalScans.length === 0) return []
+    return chronologicalScans.map((s) => {
+      const detail = allDetails.get(s.id)
+      const ad = detail?.analysis_data as AnalysisResult | undefined
+
+      // Colors hardcoded
+      const colorsCount = ad?.colors?.length || 0
+
+      // Font families to eliminate
+      const families = ad?.fontFamilies || []
+      const eliminateFamilies = families.filter(f => classifyFamily(f.normalized || f.value) === 'eliminate').length
+
+      // Font weights needing consolidation
+      const weights = ad?.fontWeights || []
+      const weightGroups = new Map<string, boolean>()
+      for (const w of weights) {
+        const target = DS_WEIGHT_TARGET[w.normalized]
+        if (target !== undefined && target !== null) weightGroups.set(w.normalized, true)
+      }
+      const weightActions = weightGroups.size
+
+      // Spacing: px not multiple of 8
+      const spacing = ad?.spacingValues || []
+      const spacingBadPx = spacing.filter(sv => {
+        const n = parseFloat(sv.normalized)
+        const isPx = /px$/i.test(sv.normalized) || sv.normalized === '0' || /^\d+$/.test(sv.normalized)
+        if (!isPx || isNaN(n)) return false
+        return n !== 0 && n % 8 !== 0
+      }).length
+
+      // Z-index irregulars
+      const zValues = ad?.zIndexValues || []
+      const zIrregulars = zValues.filter(z => {
+        const n = parseInt(z.value, 10)
+        return !isNaN(n) && n !== 0 && n % 1000 !== 0
+      }).length
+
+      // Validation errors
+      const w3cErrors = detail?.w3c_validation?.errorCount || 0
+
+      return {
+        date: new Date(s.created_at).toLocaleDateString('es-ES', { day: '2-digit', month: 'short' }),
+        colorsCount,
+        eliminateFamilies,
+        weightActions,
+        spacingBadPx,
+        zIrregulars,
+        w3cErrors,
+      }
+    })
+  }, [chronologicalScans, allDetails])
 
   const compositionChartData = latestScan
     ? [
@@ -892,9 +1012,436 @@ export function DashboardPage() {
                         )}
                       </Card>
                     </div>
+
+                    {/* ── Font Weight Consolidation Table ── */}
+                    {weights.length > 0 && (() => {
+                      const groups = new Map<string, { normalized: string; variants: { value: string; count: number }[]; totalCount: number }>()
+                      for (const w of weights) {
+                        const key = w.normalized
+                        if (!groups.has(key)) groups.set(key, { normalized: key, variants: [], totalCount: 0 })
+                        const g = groups.get(key)!
+                        g.variants.push({ value: w.value, count: w.count })
+                        g.totalCount += w.count
+                      }
+                      const allGroups = [...groups.values()].sort((a, b) => {
+                        const na = parseInt(a.normalized, 10), nb = parseInt(b.normalized, 10)
+                        if (!isNaN(na) && !isNaN(nb)) return na - nb
+                        return a.normalized.localeCompare(b.normalized)
+                      })
+                      const actionsCount = allGroups.filter(g => DS_WEIGHT_TARGET[g.normalized] != null).length
+                        + allGroups.filter(g => g.variants.length > 1).length
+
+                      return (
+                        <Card className="p-6">
+                          <div className="flex items-center gap-2 mb-1">
+                            <Bold size={20} className="text-[#006c48]" />
+                            <h3 className="text-lg font-semibold text-[#1a2e23]">Traslado de Grosores</h3>
+                            <InfoTooltip text="Pesos aprobados del DS: 100, 400, 600 y 700. El resto se consolida al peso aprobado mas cercano." />
+                          </div>
+                          {actionsCount > 0 && (
+                            <p className="text-xs text-[#9e2b25] mb-3">
+                              {actionsCount} accion{actionsCount !== 1 ? 'es' : ''} pendiente{actionsCount !== 1 ? 's' : ''}
+                            </p>
+                          )}
+                          <div className="overflow-hidden rounded-lg border border-[#f0f2f1]">
+                            <table className="w-full text-sm" style={{ tableLayout: 'fixed' }}>
+                              <colgroup>
+                                <col style={{ width: '55px' }} />
+                                <col style={{ width: '80px' }} />
+                                <col style={{ width: '120px' }} />
+                                <col style={{ width: '50px' }} />
+                                <col />
+                              </colgroup>
+                              <thead>
+                                <tr className="bg-[#f8f9fa]">
+                                  <th className="text-center py-2 px-2 text-[11px] font-semibold text-[#1a2e23]">Peso</th>
+                                  <th className="text-left py-2 px-2 text-[11px] font-semibold text-[#1a2e23]">Nombre</th>
+                                  <th className="text-left py-2 px-2 text-[11px] font-semibold text-[#1a2e23]">Valores</th>
+                                  <th className="text-center py-2 px-2 text-[11px] font-semibold text-[#1a2e23]">Usos</th>
+                                  <th className="text-left py-2 px-2 text-[11px] font-semibold text-[#1a2e23]">Accion DS</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {allGroups.map((g) => {
+                                  const hasDupes = g.variants.length > 1
+                                  const dsTarget = DS_WEIGHT_TARGET[g.normalized]
+                                  const needsConsolidation = dsTarget !== undefined && dsTarget !== null
+                                  return (
+                                    <tr key={g.normalized} className={`border-t border-[#f0f2f1] ${needsConsolidation ? 'bg-[#fef2f1]/30' : hasDupes ? 'bg-[#fef6e0]/30' : ''}`}>
+                                      <td className="py-1.5 px-2 text-center">
+                                        <div
+                                          className={`inline-block w-7 text-center rounded px-1 py-0.5 text-[9px] font-semibold text-white ${needsConsolidation ? 'line-through opacity-60' : ''}`}
+                                          style={{ backgroundColor: getWeightBarColor(g.normalized) }}
+                                        >
+                                          {g.normalized}
+                                        </div>
+                                      </td>
+                                      <td className={`py-1.5 px-2 text-[10px] ${needsConsolidation ? 'text-[#9e2b25] line-through' : 'text-[#3d5a4a]'}`}>
+                                        {getWeightLabel(g.normalized)}
+                                      </td>
+                                      <td className="py-1.5 px-2">
+                                        <div className="flex flex-wrap gap-1">
+                                          {g.variants.map((v, i) => (
+                                            <span key={i} className={`inline-flex items-center gap-0.5 px-1 py-0.5 rounded text-[9px] font-mono ${
+                                              needsConsolidation ? 'bg-[#fef2f1] text-[#9e2b25]' : hasDupes ? 'bg-[#fef6e0] text-[#a67c00]' : 'bg-[#f0f2f1] text-[#1a2e23]'
+                                            }`}>
+                                              {v.value}
+                                              <span className="text-[8px] opacity-60">{v.count}x</span>
+                                            </span>
+                                          ))}
+                                        </div>
+                                      </td>
+                                      <td className="py-1.5 px-2 text-center text-[10px] font-semibold text-[#1a2e23] tabular-nums">{g.totalCount}</td>
+                                      <td className="py-1.5 px-2">
+                                        {needsConsolidation ? (
+                                          <div className="flex items-center gap-1">
+                                            <Badge className="bg-[#fef2f1] text-[#9e2b25] text-[8px] px-1.5 py-0 shrink-0">Consolidar</Badge>
+                                            <span className="text-[9px] text-[#9e2b25]">
+                                              → {dsTarget} ({getWeightLabel(dsTarget!)})
+                                            </span>
+                                          </div>
+                                        ) : hasDupes ? (
+                                          <div className="flex items-center gap-1">
+                                            <Badge className="bg-[#fef6e0] text-[#a67c00] text-[8px] px-1.5 py-0 shrink-0">Unificar</Badge>
+                                            <span className="text-[9px] text-[#a67c00]">→ usar {g.normalized}</span>
+                                          </div>
+                                        ) : (
+                                          <Badge className="bg-[#e0f5ec] text-[#006c48] text-[8px] px-1.5 py-0">OK</Badge>
+                                        )}
+                                      </td>
+                                    </tr>
+                                  )
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+                        </Card>
+                      )
+                    })()}
+
+                    {/* ── Hardcoded Values Summary ── */}
+                    {ad && (
+                      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                        {/* Colors card */}
+                        <Card className="p-6">
+                          <div className="flex items-center gap-2 mb-3">
+                            <Palette size={18} className="text-[#006c48]" />
+                            <h3 className="text-sm font-semibold text-[#1a2e23]">Colores Hardcodeados</h3>
+                          </div>
+                          {ad.colors.length > 0 ? (
+                            <div className="space-y-3">
+                              <p className="text-3xl font-bold text-[#1a2e23]">{ad.colors.length}</p>
+                              <p className="text-xs text-[#3d5a4a]">colores escritos directamente en el CSS</p>
+                              <div className="flex flex-wrap gap-1 max-h-20 overflow-y-auto">
+                                {[...ad.colors].sort((a, b) => b.count - a.count).slice(0, 20).map((c, i) => (
+                                  <div key={i} className="w-5 h-5 rounded border border-black/10 shrink-0" style={{ backgroundColor: c.normalized }} title={`${c.value} (${c.count}x)`} />
+                                ))}
+                                {ad.colors.length > 20 && <span className="text-[10px] text-[#3d5a4a] self-center ml-1">+{ad.colors.length - 20}</span>}
+                              </div>
+                            </div>
+                          ) : (
+                            <p className="text-sm text-[#3d5a4a]">Sin colores hardcodeados</p>
+                          )}
+                        </Card>
+
+                        {/* Spacing card */}
+                        {(() => {
+                          const spacing = ad.spacingValues || []
+                          const isPx = (val: string) => /px$/i.test(val) || val === '0' || /^\d+$/.test(val)
+                          const isPercent = (val: string) => /%$/.test(val) || /v[wh]$/i.test(val)
+                          const pxVals = spacing.filter(s => isPx(s.normalized))
+                          const pctVals = spacing.filter(s => isPercent(s.normalized))
+                          const otherVals = spacing.filter(s => !isPx(s.normalized) && !isPercent(s.normalized))
+                          const pxBad = pxVals.filter(s => {
+                            const n = parseFloat(s.normalized)
+                            return isNaN(n) || (n !== 0 && n % 8 !== 0)
+                          })
+
+                          return (
+                            <Card className="p-6">
+                              <div className="flex items-center gap-2 mb-3">
+                                <Grid3X3 size={18} className="text-[#006c48]" />
+                                <h3 className="text-sm font-semibold text-[#1a2e23]">Spacing</h3>
+                                <InfoTooltip text="Valores de margin/padding/gap. Los px deben ser multiplos de 8. Porcentajes y otras unidades se muestran aparte." />
+                              </div>
+                              {spacing.length > 0 ? (
+                                <div className="space-y-3">
+                                  <p className="text-3xl font-bold text-[#1a2e23]">{spacing.length}</p>
+                                  <p className="text-xs text-[#3d5a4a]">valores de spacing hardcodeados</p>
+
+                                  <div className="grid grid-cols-3 gap-2">
+                                    <div className="text-center p-2 rounded-lg bg-[#f8f9fa]">
+                                      <p className="text-sm font-bold text-[#1a2e23]">{pxVals.length}</p>
+                                      <p className="text-[9px] text-[#3d5a4a]">px</p>
+                                    </div>
+                                    <div className="text-center p-2 rounded-lg bg-[#f0f4ff]">
+                                      <p className="text-sm font-bold text-[#2c5282]">{pctVals.length}</p>
+                                      <p className="text-[9px] text-[#3d5a4a]">% / vw / vh</p>
+                                    </div>
+                                    <div className="text-center p-2 rounded-lg bg-[#f8f9fa]">
+                                      <p className="text-sm font-bold text-[#3d5a4a]">{otherVals.length}</p>
+                                      <p className="text-[9px] text-[#3d5a4a]">rem / em / otro</p>
+                                    </div>
+                                  </div>
+
+                                  {pxBad.length > 0 ? (
+                                    <div className="flex items-start gap-2 p-2 bg-[#fef2f1] rounded-lg">
+                                      <AlertTriangle size={14} className="text-[#9e2b25] shrink-0 mt-0.5" />
+                                      <div>
+                                        <p className="text-xs font-semibold text-[#9e2b25]">{pxBad.length} px fuera de la grid 8</p>
+                                        <p className="text-[10px] text-[#9e2b25]/70 truncate">
+                                          {pxBad.slice(0, 5).map(s => s.value).join(', ')}
+                                          {pxBad.length > 5 ? ` +${pxBad.length - 5}` : ''}
+                                        </p>
+                                      </div>
+                                    </div>
+                                  ) : pxVals.length > 0 ? (
+                                    <div className="flex items-center gap-2 p-2 bg-[#e0f5ec] rounded-lg">
+                                      <CheckCircle size={12} className="text-[#006c48]" />
+                                      <p className="text-[11px] text-[#006c48] font-medium">Todos los px siguen la grid de 8</p>
+                                    </div>
+                                  ) : null}
+                                </div>
+                              ) : (
+                                <p className="text-sm text-[#3d5a4a]">Sin spacing hardcodeado</p>
+                              )}
+                            </Card>
+                          )
+                        })()}
+
+                        {/* Z-index card */}
+                        {(() => {
+                          const zValues = ad.zIndexValues || []
+                          const parsed = zValues.map(z => ({ ...z, num: parseInt(z.value, 10) })).filter(z => !isNaN(z.num))
+                          const negatives = parsed.filter(z => z.num < 0)
+                          const irregulars = parsed.filter(z => z.num !== 0 && z.num % 1000 !== 0)
+                          // Count how many of the 10 standard depth layers (0–9000) are used
+                          const STANDARD_LAYERS = 10 // 0, 1000, 2000 … 9000
+                          const usedStandard = new Set(
+                            parsed.filter(z => z.num >= 0 && z.num < 10000).map(z => Math.floor(z.num / 1000) * 1000)
+                          )
+                          const outOfRange = parsed.filter(z => z.num >= 10000)
+                          const usedDepths = new Set(parsed.filter(z => z.num >= 0).map(z => Math.floor(z.num / 1000) * 1000))
+
+                          return (
+                            <Card className="p-6">
+                              <div className="flex items-center gap-2 mb-3">
+                                <Box size={18} className="text-[#006c48]" />
+                                <h3 className="text-sm font-semibold text-[#1a2e23]">Z-index</h3>
+                                <InfoTooltip text="Valores z-index. Deben ir de 1000 en 1000. Cada rango se reserva para un tipo de elemento UI." />
+                              </div>
+                              {zValues.length > 0 ? (
+                                <div className="space-y-3">
+                                  <div className="flex items-baseline gap-2">
+                                    <p className="text-3xl font-bold text-[#1a2e23]">{zValues.length}</p>
+                                    <p className="text-xs text-[#3d5a4a]">valores en {usedStandard.size} de {STANDARD_LAYERS} capas</p>
+                                  </div>
+
+                                  <div className="grid grid-cols-2 gap-2">
+                                    <div className="text-center p-2 rounded-lg bg-[#f8f9fa]">
+                                      <p className="text-sm font-bold text-[#1a2e23]">{usedStandard.size}</p>
+                                      <p className="text-[9px] text-[#3d5a4a]">capas usadas</p>
+                                    </div>
+                                    <div className="text-center p-2 rounded-lg bg-[#f8f9fa]">
+                                      <p className="text-sm font-bold text-[#3d5a4a]">{STANDARD_LAYERS - usedStandard.size}</p>
+                                      <p className="text-[9px] text-[#3d5a4a]">capas libres</p>
+                                    </div>
+                                  </div>
+
+                                  {irregulars.length > 0 && (
+                                    <div className="flex items-start gap-2 p-2 bg-[#fef2f1] rounded-lg">
+                                      <AlertTriangle size={14} className="text-[#9e2b25] shrink-0 mt-0.5" />
+                                      <div>
+                                        <p className="text-xs font-semibold text-[#9e2b25]">{irregulars.length} fuera de la escala ×1000</p>
+                                        <p className="text-[10px] text-[#9e2b25]/70 truncate">
+                                          {irregulars.slice(0, 5).map(z => z.value).join(', ')}
+                                          {irregulars.length > 5 ? ` +${irregulars.length - 5}` : ''}
+                                        </p>
+                                      </div>
+                                    </div>
+                                  )}
+
+                                  {outOfRange.length > 0 && (
+                                    <div className="flex items-start gap-2 p-2 bg-[#fef2f1] rounded-lg">
+                                      <AlertTriangle size={14} className="text-[#9e2b25] shrink-0 mt-0.5" />
+                                      <p className="text-xs text-[#9e2b25]">
+                                        <strong>{outOfRange.length}</strong> valor{outOfRange.length !== 1 ? 'es' : ''} por encima de 9999
+                                      </p>
+                                    </div>
+                                  )}
+
+                                  {negatives.length > 0 && (
+                                    <div className="flex items-start gap-2 p-2 bg-[#fef6e0] rounded-lg">
+                                      <AlertTriangle size={14} className="text-[#a67c00] shrink-0 mt-0.5" />
+                                      <p className="text-xs text-[#a67c00]">
+                                        <strong>{negatives.length}</strong> valor{negatives.length !== 1 ? 'es' : ''} negativo{negatives.length !== 1 ? 's' : ''}
+                                      </p>
+                                    </div>
+                                  )}
+
+                                  {irregulars.length === 0 && negatives.length === 0 && outOfRange.length === 0 && (
+                                    <div className="flex items-center gap-2 p-2 bg-[#e0f5ec] rounded-lg">
+                                      <CheckCircle size={12} className="text-[#006c48]" />
+                                      <p className="text-[11px] text-[#006c48] font-medium">Escala limpia — todo en multiplos de 1000</p>
+                                    </div>
+                                  )}
+                                </div>
+                              ) : (
+                                <p className="text-sm text-[#3d5a4a]">Sin z-index hardcodeado</p>
+                              )}
+                            </Card>
+                          )
+                        })()}
+                      </div>
+                    )}
                   </div>
                 )
               })()}
+
+              {/* ══════════════════════════════════════════════════════════════
+                   SECTION 2a — Legacy Reduction Charts
+                 ══════════════════════════════════════════════════════════════ */}
+              {legacyChartData.length > 1 && (
+                <div>
+                  <SectionHeader
+                    title="Reduccion de Legacy"
+                    tooltip="Evolucion de los valores hardcodeados, errores y deuda tecnica CSS a lo largo de los escaneos. El objetivo es que todas las lineas bajen hasta cero."
+                  />
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    {/* Hardcoded Colors */}
+                    <Card className="p-6">
+                      <ChartTitle
+                        title="Colores Hardcodeados"
+                        tooltip="Cantidad de colores escritos directamente en el CSS. Deben reemplazarse por variables del Design System."
+                        first={legacyChartData[0]?.colorsCount}
+                        last={legacyChartData[legacyChartData.length - 1]?.colorsCount}
+                      />
+                      <ResponsiveContainer width="100%" height={200}>
+                        <AreaChart data={legacyChartData}>
+                          <defs>
+                            <linearGradient id="gradColors" x1="0" y1="0" x2="0" y2="1">
+                              <stop offset="5%" stopColor="#9e2b25" stopOpacity={0.2} />
+                              <stop offset="95%" stopColor="#9e2b25" stopOpacity={0} />
+                            </linearGradient>
+                          </defs>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#f0f2f1" />
+                          <XAxis dataKey="date" tick={{ fontSize: 10 }} tickLine={false} />
+                          <YAxis tick={{ fontSize: 10 }} tickLine={false} axisLine={false} />
+                          <Tooltip contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.08)', fontSize: '12px' }} />
+                          <Area type="monotone" dataKey="colorsCount" stroke="#9e2b25" strokeWidth={2} fill="url(#gradColors)" name="Colores" dot={{ r: 3 }} />
+                        </AreaChart>
+                      </ResponsiveContainer>
+                    </Card>
+
+                    {/* Fonts to Eliminate */}
+                    <Card className="p-6">
+                      <ChartTitle
+                        title="Fuentes a Eliminar"
+                        tooltip="Familias tipograficas que no son Suisse ni genericas. Deben reemplazarse por Suisse."
+                        first={legacyChartData[0]?.eliminateFamilies}
+                        last={legacyChartData[legacyChartData.length - 1]?.eliminateFamilies}
+                      />
+                      <ResponsiveContainer width="100%" height={200}>
+                        <AreaChart data={legacyChartData}>
+                          <defs>
+                            <linearGradient id="gradFonts" x1="0" y1="0" x2="0" y2="1">
+                              <stop offset="5%" stopColor="#a67c00" stopOpacity={0.2} />
+                              <stop offset="95%" stopColor="#a67c00" stopOpacity={0} />
+                            </linearGradient>
+                          </defs>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#f0f2f1" />
+                          <XAxis dataKey="date" tick={{ fontSize: 10 }} tickLine={false} />
+                          <YAxis tick={{ fontSize: 10 }} tickLine={false} axisLine={false} allowDecimals={false} />
+                          <Tooltip contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.08)', fontSize: '12px' }} />
+                          <Area type="monotone" dataKey="eliminateFamilies" stroke="#a67c00" strokeWidth={2} fill="url(#gradFonts)" name="Fuentes" dot={{ r: 3 }} />
+                        </AreaChart>
+                      </ResponsiveContainer>
+                    </Card>
+
+                    {/* Spacing — px fuera de grid 8 */}
+                    <Card className="p-6">
+                      <ChartTitle
+                        title="Spacing fuera de Grid 8"
+                        tooltip="Valores de spacing en px que no son multiplos de 8. Deben ajustarse a la escala de 8px."
+                        first={legacyChartData[0]?.spacingBadPx}
+                        last={legacyChartData[legacyChartData.length - 1]?.spacingBadPx}
+                      />
+                      <ResponsiveContainer width="100%" height={200}>
+                        <BarChart data={legacyChartData}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#f0f2f1" />
+                          <XAxis dataKey="date" tick={{ fontSize: 10 }} tickLine={false} />
+                          <YAxis tick={{ fontSize: 10 }} tickLine={false} axisLine={false} allowDecimals={false} />
+                          <Tooltip contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.08)', fontSize: '12px' }} />
+                          <Bar dataKey="spacingBadPx" fill="#9e2b25" radius={[4, 4, 0, 0]} name="px fuera de grid 8" />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </Card>
+
+                    {/* Z-index irregulares */}
+                    <Card className="p-6">
+                      <ChartTitle
+                        title="Z-index Irregulares"
+                        tooltip="Valores z-index que no son multiplos de 1000. Deben ajustarse a la escala de profundidad."
+                        first={legacyChartData[0]?.zIrregulars}
+                        last={legacyChartData[legacyChartData.length - 1]?.zIrregulars}
+                      />
+                      <ResponsiveContainer width="100%" height={200}>
+                        <BarChart data={legacyChartData}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#f0f2f1" />
+                          <XAxis dataKey="date" tick={{ fontSize: 10 }} tickLine={false} />
+                          <YAxis tick={{ fontSize: 10 }} tickLine={false} axisLine={false} allowDecimals={false} />
+                          <Tooltip contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.08)', fontSize: '12px' }} />
+                          <Bar dataKey="zIrregulars" fill="#a67c00" radius={[4, 4, 0, 0]} name="Z-index irregulares" />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </Card>
+
+                    {/* Weight consolidation actions */}
+                    <Card className="p-6">
+                      <ChartTitle
+                        title="Grosores a Consolidar"
+                        tooltip="Pesos tipograficos que deben trasladarse a los pesos aprobados del DS (100, 400, 600, 700)."
+                        first={legacyChartData[0]?.weightActions}
+                        last={legacyChartData[legacyChartData.length - 1]?.weightActions}
+                      />
+                      <ResponsiveContainer width="100%" height={200}>
+                        <BarChart data={legacyChartData}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#f0f2f1" />
+                          <XAxis dataKey="date" tick={{ fontSize: 10 }} tickLine={false} />
+                          <YAxis tick={{ fontSize: 10 }} tickLine={false} axisLine={false} allowDecimals={false} />
+                          <Tooltip contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.08)', fontSize: '12px' }} />
+                          <Bar dataKey="weightActions" fill="#5cc49a" radius={[4, 4, 0, 0]} name="Grosores a consolidar" />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </Card>
+
+                    {/* Validation Errors */}
+                    <Card className="p-6">
+                      <ChartTitle
+                        title="Errores de Validacion"
+                        tooltip="Errores detectados por el validador CSS. Incluye propiedades desconocidas, sintaxis invalida, etc."
+                        first={legacyChartData[0]?.w3cErrors}
+                        last={legacyChartData[legacyChartData.length - 1]?.w3cErrors}
+                      />
+                      <ResponsiveContainer width="100%" height={200}>
+                        <AreaChart data={legacyChartData}>
+                          <defs>
+                            <linearGradient id="gradErrors" x1="0" y1="0" x2="0" y2="1">
+                              <stop offset="5%" stopColor="#9e2b25" stopOpacity={0.15} />
+                              <stop offset="95%" stopColor="#9e2b25" stopOpacity={0} />
+                            </linearGradient>
+                          </defs>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#f0f2f1" />
+                          <XAxis dataKey="date" tick={{ fontSize: 10 }} tickLine={false} />
+                          <YAxis tick={{ fontSize: 10 }} tickLine={false} axisLine={false} allowDecimals={false} />
+                          <Tooltip contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.08)', fontSize: '12px' }} />
+                          <Area type="monotone" dataKey="w3cErrors" stroke="#9e2b25" strokeWidth={2} fill="url(#gradErrors)" name="Errores" dot={{ r: 3 }} />
+                        </AreaChart>
+                      </ResponsiveContainer>
+                    </Card>
+                  </div>
+                </div>
+              )}
 
               {/* ══════════════════════════════════════════════════════════════
                    SECTION 2b — HolyGrail5 Live Comparison
@@ -1033,13 +1580,22 @@ export function DashboardPage() {
                                 Colores redundantes ({hg5Coverage.colors.redundant.length})
                               </h4>
                               <div className="flex flex-wrap gap-2">
-                                {hg5Coverage.colors.redundant.sort((a,b) => b.count - a.count).map((item, i) => (
+                                {hg5Coverage.colors.redundant.sort((a,b) => b.count - a.count).map((item, i) => {
+                                  const varName = hg5Tokens.varNames[item.value]
+                                  return (
                                   <div key={i} className="flex items-center gap-1.5 bg-[#fef2f1] rounded-lg px-2.5 py-1.5">
                                     <div className="w-4 h-4 rounded border shrink-0" style={{ backgroundColor: item.value }} />
                                     <span className="text-xs font-mono">{item.value}</span>
+                                    {varName && (
+                                      <>
+                                        <span className="text-[10px] text-[#3d5a4a]">→</span>
+                                        <span className="text-[10px] font-mono text-[#006c48]">{varName}</span>
+                                      </>
+                                    )}
                                     <Badge variant="secondary" className="text-[10px] px-1.5 py-0">{item.count}x</Badge>
                                   </div>
-                                ))}
+                                  )
+                                })}
                               </div>
                             </div>
                           )}
@@ -1049,12 +1605,21 @@ export function DashboardPage() {
                                 Font-sizes redundantes ({hg5Coverage.fontSizes.redundant.length})
                               </h4>
                               <div className="flex flex-wrap gap-2">
-                                {hg5Coverage.fontSizes.redundant.sort((a,b) => b.count - a.count).map((item, i) => (
-                                  <div key={i} className="bg-[#fef2f1] rounded-lg px-2.5 py-1.5">
+                                {hg5Coverage.fontSizes.redundant.sort((a,b) => b.count - a.count).map((item, i) => {
+                                  const varName = hg5Tokens.varNames[item.value]
+                                  return (
+                                  <div key={i} className="flex items-center gap-1.5 bg-[#fef2f1] rounded-lg px-2.5 py-1.5">
                                     <span className="text-xs font-mono">{item.value}</span>
-                                    <Badge variant="secondary" className="text-[10px] px-1.5 py-0 ml-1.5">{item.count}x</Badge>
+                                    {varName && (
+                                      <>
+                                        <span className="text-[10px] text-[#3d5a4a]">→</span>
+                                        <span className="text-[10px] font-mono text-[#006c48]">{varName}</span>
+                                      </>
+                                    )}
+                                    <Badge variant="secondary" className="text-[10px] px-1.5 py-0">{item.count}x</Badge>
                                   </div>
-                                ))}
+                                  )
+                                })}
                               </div>
                             </div>
                           )}
@@ -1064,12 +1629,21 @@ export function DashboardPage() {
                                 Spacing redundante ({hg5Coverage.spacing.redundant.length})
                               </h4>
                               <div className="flex flex-wrap gap-2">
-                                {hg5Coverage.spacing.redundant.sort((a,b) => b.count - a.count).map((item, i) => (
-                                  <div key={i} className="bg-[#fef2f1] rounded-lg px-2.5 py-1.5">
+                                {hg5Coverage.spacing.redundant.sort((a,b) => b.count - a.count).map((item, i) => {
+                                  const varName = hg5Tokens.varNames[item.value]
+                                  return (
+                                  <div key={i} className="flex items-center gap-1.5 bg-[#fef2f1] rounded-lg px-2.5 py-1.5">
                                     <span className="text-xs font-mono">{item.value}</span>
-                                    <Badge variant="secondary" className="text-[10px] px-1.5 py-0 ml-1.5">{item.count}x</Badge>
+                                    {varName && (
+                                      <>
+                                        <span className="text-[10px] text-[#3d5a4a]">→</span>
+                                        <span className="text-[10px] font-mono text-[#006c48]">{varName}</span>
+                                      </>
+                                    )}
+                                    <Badge variant="secondary" className="text-[10px] px-1.5 py-0">{item.count}x</Badge>
                                   </div>
-                                ))}
+                                  )
+                                })}
                               </div>
                             </div>
                           )}
@@ -1087,7 +1661,9 @@ export function DashboardPage() {
                           Estos colores no existen en HolyGrail5. Se sugiere el token HG5 mas cercano.
                         </p>
                         <div className="flex flex-wrap gap-2">
-                          {hg5Coverage.colors.mismatches.slice(0, 20).map((m, i) => (
+                          {(showAllMismatches ? hg5Coverage.colors.mismatches : hg5Coverage.colors.mismatches.slice(0, 20)).map((m, i) => {
+                            const varName = m.closestDsValue ? hg5Tokens.varNames[m.closestDsValue] : null
+                            return (
                             <div key={i} className="flex items-center gap-1.5 bg-[#f8f9fa] rounded-lg px-2.5 py-1.5">
                               <div className="w-4 h-4 rounded border shrink-0" style={{ backgroundColor: m.value }} />
                               <span className="text-xs font-mono">{m.value}</span>
@@ -1095,15 +1671,23 @@ export function DashboardPage() {
                                 <>
                                   <span className="text-[10px] text-[#3d5a4a]">→</span>
                                   <div className="w-3 h-3 rounded border shrink-0" style={{ backgroundColor: m.closestDsValue }} />
-                                  <span className="text-[10px] font-mono text-[#006c48]">{m.closestDsValue}</span>
+                                  <span className="text-[10px] font-mono text-[#006c48]" title={m.closestDsValue}>
+                                    {varName || m.closestDsValue}
+                                  </span>
                                 </>
                               )}
                             </div>
-                          ))}
+                            )
+                          })}
                           {hg5Coverage.colors.mismatches.length > 20 && (
-                            <span className="text-xs text-[#3d5a4a] self-center">
-                              +{hg5Coverage.colors.mismatches.length - 20} mas
-                            </span>
+                            <button
+                              onClick={() => setShowAllMismatches(!showAllMismatches)}
+                              className="text-xs font-medium text-[#006c48] hover:text-[#004d33] self-center px-2 py-1 rounded hover:bg-[#e0f5ec] transition-colors cursor-pointer"
+                            >
+                              {showAllMismatches
+                                ? 'Ver menos'
+                                : `+${hg5Coverage.colors.mismatches.length - 20} mas`}
+                            </button>
                           )}
                         </div>
                       </Card>
