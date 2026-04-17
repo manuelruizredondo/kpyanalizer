@@ -45,7 +45,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           }
         } else if (mounted) {
           setUser(session.user)
-          await fetchUserProfile(session.user.id)
+          // Set immediate fallback profile from JWT data
+          setProfile({
+            id: session.user.id,
+            email: session.user.email || '',
+            full_name: session.user.user_metadata?.full_name || session.user.email?.split('@')[0] || '',
+            role: 'editor',
+          })
+          // Then try to fetch full profile from DB (may fail silently)
+          fetchUserProfile(session.user.id, session.access_token)
         }
       } catch (error) {
         console.error('Error checking session:', error)
@@ -63,7 +71,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (!mounted) return
       if (session?.user) {
         setUser(session.user)
-        await fetchUserProfile(session.user.id)
+        setProfile({
+          id: session.user.id,
+          email: session.user.email || '',
+          full_name: session.user.user_metadata?.full_name || session.user.email?.split('@')[0] || '',
+          role: 'editor',
+        })
+        fetchUserProfile(session.user.id, session.access_token)
       } else {
         setUser(null)
         setProfile(null)
@@ -78,36 +92,42 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, [])
 
-  const fetchUserProfile = async (userId: string) => {
+  const fetchUserProfile = async (userId: string, accessToken?: string) => {
     try {
-      // Use REST directly — the Supabase SDK hangs on this network
-      const { data: { session } } = await supabase.auth.getSession()
-      if (!session) return
+      let token = accessToken
+      if (!token) {
+        const { data: { session } } = await supabase.auth.getSession()
+        token = session?.access_token
+      }
+      if (!token) return
 
       const controller = new AbortController()
-      const timeout = setTimeout(() => controller.abort(), 6000)
+      const t = setTimeout(() => controller.abort(), 6000)
 
+      console.log('[Auth] Fetching profile for', userId)
       const resp = await fetch(
         `https://lqgdrkwabcjrnnthlrmi.supabase.co/rest/v1/profiles?select=id,email,full_name,role,avatar_url&id=eq.${userId}`,
         {
           signal: controller.signal,
           headers: {
             'apikey': 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxxZ2Rya3dhYmNqcm5udGhscm1pIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYzMzIzMTQsImV4cCI6MjA5MTkwODMxNH0.0qhUexm2vPc-wDnX-G7w5Gg82Y2_Jow_v-9kWqL29AQ',
-            'Authorization': `Bearer ${session.access_token}`,
+            'Authorization': `Bearer ${token}`,
             'Content-Type': 'application/json',
           }
         }
       )
-      clearTimeout(timeout)
+      clearTimeout(t)
 
+      console.log('[Auth] Profile response:', resp.status)
       if (!resp.ok) throw new Error(`Profile fetch failed: ${resp.status}`)
       const rows = await resp.json()
+      console.log('[Auth] Profile data:', rows.length, 'rows')
       if (rows.length > 0) {
         setProfile(rows[0] as UserProfile)
       }
     } catch (error) {
-      console.error('Error fetching user profile:', error)
-      setProfile(null)
+      // Don't null the profile — keep the fallback from JWT
+      console.warn('[Auth] Could not fetch full profile:', error)
     }
   }
 

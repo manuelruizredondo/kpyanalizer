@@ -47,10 +47,37 @@ import {
   Type,
   Loader2,
   RefreshCw,
+  Info,
 } from 'lucide-react'
 
 const HG5_URL = 'https://hg5.netlify.app/output.css'
 const CORS_PROXY = 'https://lqgdrkwabcjrnnthlrmi.supabase.co/functions/v1/cors-proxy'
+
+// ─── Info Tooltip ──────────────────────────────────────────────────
+function InfoTooltip({ text }: { text: string }) {
+  return (
+    <span className="relative group inline-flex">
+      <Info size={13} className="text-[#3d5a4a]/50 hover:text-[#006c48] cursor-help transition-colors" />
+      <span className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 rounded-lg bg-[#1a2e23] text-white text-xs leading-relaxed px-3 py-2 opacity-0 group-hover:opacity-100 transition-opacity z-50 shadow-lg">
+        {text}
+        <span className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-[#1a2e23]" />
+      </span>
+    </span>
+  )
+}
+
+// ─── Section Header ────────────────────────────────────────────────
+function SectionHeader({ title, tooltip, children }: { title: string; tooltip?: string; children?: React.ReactNode }) {
+  return (
+    <div className="flex items-center justify-between mb-4">
+      <div className="flex items-center gap-2">
+        <h2 className="text-lg font-semibold text-[#1a2e23]">{title}</h2>
+        {tooltip && <InfoTooltip text={tooltip} />}
+      </div>
+      {children}
+    </div>
+  )
+}
 
 // ─── Metric Card ───────────────────────────────────────────────────
 function MetricCard({
@@ -61,6 +88,7 @@ function MetricCard({
   color = '#006c48',
   delta,
   invertDelta = false,
+  tooltip,
 }: {
   icon: React.ElementType
   label: string
@@ -68,7 +96,8 @@ function MetricCard({
   unit?: string
   color?: string
   delta?: number | null
-  invertDelta?: boolean // true = lower is better (e.g. !important count)
+  invertDelta?: boolean
+  tooltip?: string
 }) {
   const showDelta = delta !== undefined && delta !== null && delta !== 0
   const isPositive = invertDelta ? delta! < 0 : delta! > 0
@@ -82,7 +111,10 @@ function MetricCard({
         <Icon size={20} style={{ color }} />
       </div>
       <div className="min-w-0 flex-1">
-        <p className="text-xs text-[#3d5a4a] truncate">{label}</p>
+        <div className="flex items-center gap-1.5">
+          <p className="text-xs text-[#3d5a4a] truncate">{label}</p>
+          {tooltip && <InfoTooltip text={tooltip} />}
+        </div>
         <div className="flex items-baseline gap-2">
           <p className="text-lg font-bold text-[#1a2e23] leading-tight">
             {value}
@@ -589,7 +621,10 @@ export function DashboardPage() {
               <Card className="p-6">
                 <div className="flex items-center justify-between mb-2">
                   <div>
-                    <h2 className="text-lg font-semibold text-[#1a2e23]">CSS Health Score</h2>
+                    <div className="flex items-center gap-2">
+                      <h2 className="text-lg font-semibold text-[#1a2e23]">CSS Health Score</h2>
+                      <InfoTooltip text="Puntuacion de 0 a 100 que mide la calidad general de tu CSS. Considera duplicados, !important, IDs, especificidad, prefijos vendor y eficiencia shorthand." />
+                    </div>
                     <p className="text-sm text-[#3d5a4a]">Evolucion de la calidad del CSS a lo largo de los escaneos</p>
                   </div>
                   <div className="flex items-center gap-3">
@@ -629,18 +664,18 @@ export function DashboardPage() {
                    SECTION 1 — Metrics Cards
                  ══════════════════════════════════════════════════════════════ */}
               <div>
-                <h2 className="text-lg font-semibold text-[#1a2e23] mb-4">Metricas del ultimo escaneo</h2>
+                <SectionHeader title="Metricas del ultimo escaneo" tooltip="Resumen de los KPIs clave del ultimo analisis CSS. Las flechas muestran la diferencia con el escaneo anterior." />
                 <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
-                  <MetricCard icon={FileText} label="Peso" value={(latestScan.file_size / 1024).toFixed(1)} unit="KB" delta={previousScan ? +((latestScan.file_size - previousScan.file_size) / 1024).toFixed(1) : null} invertDelta />
-                  <MetricCard icon={Ruler} label="Lineas" value={latestScan.line_count.toLocaleString()} color="#2a9d6e" delta={getDelta(latestScan.line_count, previousScan?.line_count)} invertDelta />
-                  <MetricCard icon={Hash} label="Clases" value={latestScan.class_count.toLocaleString()} color="#006c48" delta={getDelta(latestScan.class_count, previousScan?.class_count)} />
-                  <MetricCard icon={AtSign} label="IDs" value={latestScan.id_count.toLocaleString()} color="#a67c00" delta={getDelta(latestScan.id_count, previousScan?.id_count)} invertDelta />
-                  <MetricCard icon={AlertTriangle} label="!important" value={latestScan.important_count.toLocaleString()} color="#9e2b25" delta={getDelta(latestScan.important_count, previousScan?.important_count)} invertDelta />
-                  <MetricCard icon={Variable} label="Variables CSS" value={latestScan.variable_count.toLocaleString()} color="#2a9d6e" delta={getDelta(latestScan.variable_count, previousScan?.variable_count)} />
-                  <MetricCard icon={Layers} label="Selectores" value={latestScan.total_selectors.toLocaleString()} delta={getDelta(latestScan.total_selectors, previousScan?.total_selectors)} invertDelta />
-                  <MetricCard icon={FileCode} label="Declaraciones" value={latestScan.total_declarations.toLocaleString()} delta={getDelta(latestScan.total_declarations, previousScan?.total_declarations)} invertDelta />
-                  <MetricCard icon={Copy} label="Unicas" value={latestScan.unique_declarations.toLocaleString()} color="#5cc49a" delta={getDelta(latestScan.unique_declarations, previousScan?.unique_declarations)} invertDelta />
-                  <MetricCard icon={Recycle} label="Ratio reutilizacion" value={(latestScan.reuse_ratio * 100).toFixed(1)} unit="%" color={latestScan.reuse_ratio >= 0.5 ? '#006c48' : '#9e2b25'} delta={previousScan ? +((latestScan.reuse_ratio - previousScan.reuse_ratio) * 100).toFixed(1) : null} />
+                  <MetricCard icon={FileText} label="Peso" value={(latestScan.file_size / 1024).toFixed(1)} unit="KB" delta={previousScan ? +((latestScan.file_size - previousScan.file_size) / 1024).toFixed(1) : null} invertDelta tooltip="Tamano del archivo CSS en kilobytes. Un CSS mas ligero mejora el rendimiento de carga de la pagina." />
+                  <MetricCard icon={Ruler} label="Lineas" value={latestScan.line_count.toLocaleString()} color="#2a9d6e" delta={getDelta(latestScan.line_count, previousScan?.line_count)} invertDelta tooltip="Total de lineas de codigo en el archivo CSS. Menos lineas = CSS mas facil de mantener." />
+                  <MetricCard icon={Hash} label="Clases" value={latestScan.class_count.toLocaleString()} color="#006c48" delta={getDelta(latestScan.class_count, previousScan?.class_count)} tooltip="Selectores de clase (.nombre) usados. Las clases son la forma recomendada de aplicar estilos." />
+                  <MetricCard icon={AtSign} label="IDs" value={latestScan.id_count.toLocaleString()} color="#a67c00" delta={getDelta(latestScan.id_count, previousScan?.id_count)} invertDelta tooltip="Selectores de ID (#nombre). Tienen alta especificidad y dificultan la reutilizacion. Evitalos en CSS." />
+                  <MetricCard icon={AlertTriangle} label="!important" value={latestScan.important_count.toLocaleString()} color="#9e2b25" delta={getDelta(latestScan.important_count, previousScan?.important_count)} invertDelta tooltip="Veces que se usa !important para forzar prioridad. Indica problemas de especificidad y dificulta el mantenimiento." />
+                  <MetricCard icon={Variable} label="Variables CSS" value={latestScan.variable_count.toLocaleString()} color="#2a9d6e" delta={getDelta(latestScan.variable_count, previousScan?.variable_count)} tooltip="Custom properties (--var) definidas. Usar variables mejora la consistencia y facilita cambios globales." />
+                  <MetricCard icon={Layers} label="Selectores" value={latestScan.total_selectors.toLocaleString()} delta={getDelta(latestScan.total_selectors, previousScan?.total_selectors)} invertDelta tooltip="Total de reglas CSS definidas. Cada selector aplica estilos a uno o mas elementos del DOM." />
+                  <MetricCard icon={FileCode} label="Declaraciones" value={latestScan.total_declarations.toLocaleString()} delta={getDelta(latestScan.total_declarations, previousScan?.total_declarations)} invertDelta tooltip="Total de propiedades CSS escritas (ej. color: red). Incluye repetidas." />
+                  <MetricCard icon={Copy} label="Unicas" value={latestScan.unique_declarations.toLocaleString()} color="#5cc49a" delta={getDelta(latestScan.unique_declarations, previousScan?.unique_declarations)} invertDelta tooltip="Declaraciones no repetidas. La diferencia con el total indica cuanta duplicacion hay en tu CSS." />
+                  <MetricCard icon={Recycle} label="Ratio reutilizacion" value={(latestScan.reuse_ratio * 100).toFixed(1)} unit="%" color={latestScan.reuse_ratio >= 0.5 ? '#006c48' : '#9e2b25'} delta={previousScan ? +((latestScan.reuse_ratio - previousScan.reuse_ratio) * 100).toFixed(1) : null} tooltip="Porcentaje de declaraciones repetidas vs unicas. Un ratio alto indica CSS eficiente con buena reutilizacion de estilos." />
                 </div>
               </div>
 
@@ -653,6 +688,7 @@ export function DashboardPage() {
                   <div className="flex items-center gap-2 mb-4">
                     <ShieldCheck size={20} className="text-[#006c48]" />
                     <h3 className="text-lg font-semibold text-[#1a2e23]">Validacion W3C</h3>
+                    <InfoTooltip text="Resultado de validar tu CSS contra el estandar W3C. Errores indican sintaxis invalida; warnings son advertencias de buenas practicas." />
                   </div>
                   {latestDetail?.w3c_validation ? (
                     <div className="space-y-4">
@@ -708,6 +744,7 @@ export function DashboardPage() {
                   <div className="flex items-center gap-2 mb-4">
                     <Palette size={20} className="text-[#006c48]" />
                     <h3 className="text-lg font-semibold text-[#1a2e23]">Cobertura Design System</h3>
+                    <InfoTooltip text="Porcentaje de valores en tu CSS (colores, tipografia, spacing, z-index) que coinciden con los tokens de tu Design System. 100% = todo alineado." />
                   </div>
                   {latestDetail?.ds_coverage ? (
                     <div className="space-y-4">
@@ -733,11 +770,7 @@ export function DashboardPage() {
                    SECTION 2b — HolyGrail5 Live Comparison
                  ══════════════════════════════════════════════════════════════ */}
               <div>
-                <div className="flex items-center justify-between mb-4">
-                  <div>
-                    <h2 className="text-lg font-semibold text-[#1a2e23]">Comparativa con HolyGrail5</h2>
-                    <p className="text-sm text-[#3d5a4a]">Cruce en tiempo real de tu CSS con el framework HG5</p>
-                  </div>
+                <SectionHeader title="Comparativa con HolyGrail5" tooltip="Cruce automatico de tu CSS con el framework HolyGrail5. Muestra que valores ya existen en HG5 (redundantes) y cuales no. Usa esto para eliminar codigo duplicado.">
                   {!hg5Loading && (
                     <Button
                       variant="outline"
@@ -752,7 +785,7 @@ export function DashboardPage() {
                       Recargar
                     </Button>
                   )}
-                </div>
+                </SectionHeader>
 
                 {hg5Loading ? (
                   <Card className="p-8 flex items-center justify-center gap-3">
@@ -960,11 +993,14 @@ export function DashboardPage() {
                    SECTION 3 — Evolution Charts
                  ══════════════════════════════════════════════════════════════ */}
               <div>
-                <h2 className="text-lg font-semibold text-[#1a2e23] mb-4">Evolucion</h2>
+                <SectionHeader title="Evolucion" tooltip="Graficos que muestran como han cambiado los KPIs de tu CSS a lo largo de los escaneos. Te ayuda a detectar tendencias y regresiones." />
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                   {/* Weight & Lines */}
                   <Card className="p-6">
-                    <h3 className="text-sm font-semibold text-[#1a2e23] mb-3">Peso y Lineas</h3>
+                    <div className="flex items-center gap-1.5 mb-3">
+                      <h3 className="text-sm font-semibold text-[#1a2e23]">Peso y Lineas</h3>
+                      <InfoTooltip text="Evolucion del tamano del archivo (KB) y numero de lineas. Un CSS que crece sin control puede afectar el rendimiento." />
+                    </div>
                     <ResponsiveContainer width="100%" height={250}>
                       <LineChart data={weightChartData}>
                         <CartesianGrid strokeDasharray="3 3" stroke="#f0f2f1" />
@@ -981,7 +1017,10 @@ export function DashboardPage() {
 
                   {/* Selectors & Declarations */}
                   <Card className="p-6">
-                    <h3 className="text-sm font-semibold text-[#1a2e23] mb-3">Selectores y Declaraciones</h3>
+                    <div className="flex items-center gap-1.5 mb-3">
+                      <h3 className="text-sm font-semibold text-[#1a2e23]">Selectores y Declaraciones</h3>
+                      <InfoTooltip text="Cantidad de reglas CSS (selectores) y propiedades escritas (declaraciones). La linea 'Unicas' muestra cuantas no se repiten." />
+                    </div>
                     <ResponsiveContainer width="100%" height={250}>
                       <AreaChart data={selectorsChartData}>
                         <CartesianGrid strokeDasharray="3 3" stroke="#f0f2f1" />
@@ -998,7 +1037,10 @@ export function DashboardPage() {
 
                   {/* !important & IDs */}
                   <Card className="p-6">
-                    <h3 className="text-sm font-semibold text-[#1a2e23] mb-3">!important e IDs</h3>
+                    <div className="flex items-center gap-1.5 mb-3">
+                      <h3 className="text-sm font-semibold text-[#1a2e23]">!important e IDs</h3>
+                      <InfoTooltip text="Indicadores de problemas de especificidad. Menos !important e IDs = CSS mas facil de mantener y predecible." />
+                    </div>
                     <ResponsiveContainer width="100%" height={250}>
                       <BarChart data={issuesChartData}>
                         <CartesianGrid strokeDasharray="3 3" stroke="#f0f2f1" />
@@ -1014,7 +1056,10 @@ export function DashboardPage() {
 
                   {/* Reuse Ratio */}
                   <Card className="p-6">
-                    <h3 className="text-sm font-semibold text-[#1a2e23] mb-3">Ratio de Reutilizacion</h3>
+                    <div className="flex items-center gap-1.5 mb-3">
+                      <h3 className="text-sm font-semibold text-[#1a2e23]">Ratio de Reutilizacion</h3>
+                      <InfoTooltip text="Porcentaje de declaraciones que se repiten. Un ratio alto significa CSS eficiente con estilos compartidos entre componentes." />
+                    </div>
                     <ResponsiveContainer width="100%" height={250}>
                       <AreaChart data={reuseChartData}>
                         <defs>
@@ -1034,7 +1079,10 @@ export function DashboardPage() {
 
                   {/* Composition Bar */}
                   <Card className="p-6">
-                    <h3 className="text-sm font-semibold text-[#1a2e23] mb-3">Composicion del CSS</h3>
+                    <div className="flex items-center gap-1.5 mb-3">
+                      <h3 className="text-sm font-semibold text-[#1a2e23]">Composicion del CSS</h3>
+                      <InfoTooltip text="Distribucion de los tipos de selectores y propiedades en tu CSS. Idealmente, las clases dominan y los IDs/!important son minimos." />
+                    </div>
                     <ResponsiveContainer width="100%" height={250}>
                       <BarChart data={compositionChartData} layout="vertical">
                         <CartesianGrid strokeDasharray="3 3" stroke="#f0f2f1" />
@@ -1056,7 +1104,7 @@ export function DashboardPage() {
                    SECTION 4 — Scans History Table
                  ══════════════════════════════════════════════════════════════ */}
               <div>
-                <h2 className="text-lg font-semibold text-[#1a2e23] mb-4">Historial de escaneos</h2>
+                <SectionHeader title="Historial de escaneos" tooltip="Tabla con todos los escaneos guardados de este proyecto. Haz clic en el icono de ojo para ver el detalle completo de cada analisis." />
                 <Card className="p-0 overflow-hidden">
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm">

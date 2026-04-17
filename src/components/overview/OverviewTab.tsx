@@ -102,42 +102,43 @@ export function OverviewTab({ result }: OverviewTabProps) {
       {/* Metrics Grid - 6 columns */}
       <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
         {/* File & Structure */}
-        <MetricCard label="Peso" value={`${(result.fileSize / 1024).toFixed(1)} KB`} icon={FileText} />
-        <MetricCard label="Líneas" value={result.lineCount} icon={Code} />
-        <MetricCard label="Selectores" value={result.totalSelectors} icon={Hash} />
-        <MetricCard label="Declaraciones" value={result.totalDeclarations} icon={Zap} />
-        <MetricCard label="Decl. únicas" value={result.uniqueDeclarations} icon={Package} />
-        <MetricCard label="Reutilización" value={`${(result.reuseRatio * 100).toFixed(0)}%`} icon={Percent} />
+        <MetricCard label="Peso" value={`${(result.fileSize / 1024).toFixed(1)} KB`} icon={FileText} description="Tamaño del archivo CSS" />
+        <MetricCard label="Líneas" value={result.lineCount} icon={Code} description="Total de líneas de código" />
+        <MetricCard label="Selectores" value={result.totalSelectors} icon={Hash} description="Reglas CSS definidas" />
+        <MetricCard label="Declaraciones" value={result.totalDeclarations} icon={Zap} description="Propiedades escritas en total" />
+        <MetricCard label="Decl. únicas" value={result.uniqueDeclarations} icon={Package} description="Propiedades no repetidas" />
+        <MetricCard label="Reutilización" value={`${(result.reuseRatio * 100).toFixed(0)}%`} icon={Percent} description="% de declaraciones repetidas vs únicas" />
 
         {/* Selectors & IDs */}
-        <MetricCard label="Clases" value={result.classCount} icon={Hash} variant="success" />
-        <MetricCard label="IDs" value={result.idCount} icon={AtSign} variant={result.idCount > 5 ? "danger" : "default"} />
-        <MetricCard label="!important" value={result.importantCount} icon={AlertTriangle} variant={result.importantCount > 5 ? "danger" : result.importantCount > 0 ? "warning" : "default"} />
-        <MetricCard label="Selectores univ." value={result.universalSelectorCount} icon={Zap} variant={result.universalSelectorCount > 10 ? "warning" : "default"} />
-        <MetricCard label="Selectores attr." value={result.attributeSelectorCount} icon={Hash} />
-        <MetricCard label="Pseudo-clases" value={result.pseudoClassCount} icon={Code} />
+        <MetricCard label="Clases" value={result.classCount} icon={Hash} variant="success" description="Selectores .clase usados" />
+        <MetricCard label="IDs" value={result.idCount} icon={AtSign} variant={result.idCount > 5 ? "danger" : "default"} description="Selectores #id — evítalos" />
+        <MetricCard label="!important" value={result.importantCount} icon={AlertTriangle} variant={result.importantCount > 5 ? "danger" : result.importantCount > 0 ? "warning" : "default"} description="Fuerza la prioridad, indica problemas" />
+        <MetricCard label="Selectores univ." value={result.universalSelectorCount} icon={Zap} variant={result.universalSelectorCount > 10 ? "warning" : "default"} description="Uso de * — afecta rendimiento" />
+        <MetricCard label="Selectores attr." value={result.attributeSelectorCount} icon={Hash} description="Selectores tipo [type='text']" />
+        <MetricCard label="Pseudo-clases" value={result.pseudoClassCount} icon={Code} description=":hover, :focus, :nth-child..." />
 
         {/* Pseudo-elements & Vendor */}
-        <MetricCard label="Pseudo-elem." value={result.pseudoElementCount} icon={Code} />
-        <MetricCard label="Prefijos vendor" value={result.vendorPrefixCount} icon={AlertTriangle} variant={result.vendorPrefixCount > 10 ? "warning" : "default"} />
-        <MetricCard label="Shorthand" value={result.shorthandCount} icon={Package} variant="success" />
-        <MetricCard label="Longhand" value={result.longhandCount} icon={Code} />
-        <MetricCard label="Variables CSS" value={result.variableCount} icon={Variable} variant="success" />
-        <MetricCard label="Media queries" value={result.mediaQueries.length} icon={Monitor} />
+        <MetricCard label="Pseudo-elem." value={result.pseudoElementCount} icon={Code} description="::before, ::after, ::placeholder" />
+        <MetricCard label="Prefijos vendor" value={result.vendorPrefixCount} icon={AlertTriangle} variant={result.vendorPrefixCount > 10 ? "warning" : "default"} description="-webkit-, -moz- — usa autoprefixer" />
+        <MetricCard label="Shorthand" value={result.shorthandCount} icon={Package} variant="success" description="margin, padding, background..." />
+        <MetricCard label="Longhand" value={result.longhandCount} icon={Code} description="margin-top, padding-left... unificables" />
+        <MetricCard label="Variables CSS" value={result.variableCount} icon={Variable} variant="success" description="Custom properties --var definidas" />
+        <MetricCard label="Media queries" value={result.mediaQueries.length} icon={Monitor} description="Breakpoints responsive" />
 
         {/* Specificity */}
-        <MetricCard label="Max especif." value={`${result.maxSpecificity[0]},${result.maxSpecificity[1]},${result.maxSpecificity[2]}`} icon={Zap} variant={result.maxSpecificity[0] > 0 ? "danger" : "default"} />
-        <MetricCard label="Prom. especif." value={result.avgSpecificity.toFixed(1)} icon={Code} />
-        <MetricCard label="Anidamiento" value={result.deepestNesting} icon={Layers} />
-        <MetricCard label="Duplicados sel." value={result.duplicateSelectors.length} icon={Copy} variant={result.duplicateSelectors.length > 10 ? "danger" : result.duplicateSelectors.length > 0 ? "warning" : "default"} />
-        <MetricCard label="Duplicados decl." value={result.duplicateDeclarations.length} icon={Copy} variant={result.duplicateDeclarations.length > 10 ? "danger" : result.duplicateDeclarations.length > 0 ? "warning" : "default"} />
-        <MetricCard label="Keyframes" value={result.keyframes.length} icon={Play} />
+        <MetricCard label="Max especif." value={`${result.maxSpecificity[0]},${result.maxSpecificity[1]},${result.maxSpecificity[2]}`} icon={Zap} variant={result.maxSpecificity[0] > 0 ? "danger" : "default"} description="Especificidad más alta (a,b,c)" />
+        <MetricCard label="Prom. especif." value={result.avgSpecificity.toFixed(1)} icon={Code} description="Media ponderada de especificidad" />
+        <MetricCard label="Anidamiento" value={result.deepestNesting} icon={Layers} description="Profundidad máxima de reglas" />
+        <MetricCard label="Duplicados sel." value={result.duplicateSelectors.length} icon={Copy} variant={result.duplicateSelectors.length > 10 ? "danger" : result.duplicateSelectors.length > 0 ? "warning" : "default"} description="Misma regla repetida en el CSS" />
+        <MetricCard label="Duplicados decl." value={result.duplicateDeclarations.length} icon={Copy} variant={result.duplicateDeclarations.length > 10 ? "danger" : result.duplicateDeclarations.length > 0 ? "warning" : "default"} description="Misma propiedad:valor repetida" />
+        <MetricCard label="Keyframes" value={result.keyframes.length} icon={Play} description="Animaciones @keyframes definidas" />
       </div>
 
       {/* Shorthand Efficiency Bar */}
       <Card>
         <CardContent className="p-4">
-          <h4 className="text-sm font-semibold mb-3">Eficiencia Shorthand vs Longhand</h4>
+          <h4 className="text-sm font-semibold mb-1">Eficiencia Shorthand vs Longhand</h4>
+          <p className="text-xs text-muted-foreground mb-3">Shorthand (margin, padding...) es más limpio que longhand (margin-top, margin-right...). Más verde = mejor.</p>
           <div className="space-y-2">
             <div className="flex items-center gap-4">
               <div className="flex-1">
@@ -165,7 +166,8 @@ export function OverviewTab({ result }: OverviewTabProps) {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {specificityData.length > 0 && (
           <div className="rounded-lg border p-4">
-            <h4 className="text-sm font-semibold mb-4">Distribución de Especificidad</h4>
+            <h4 className="text-sm font-semibold mb-1">Distribución de Especificidad</h4>
+            <p className="text-xs text-muted-foreground mb-3">Cómo se reparten tus selectores: tipo (div, p), clase (.btn) o ID (#header). Menos IDs = mejor.</p>
             <ResponsiveContainer width="100%" height={250}>
               <BarChart data={specificityData}>
                 <CartesianGrid strokeDasharray="3 3" className="opacity-30" />
@@ -180,7 +182,8 @@ export function OverviewTab({ result }: OverviewTabProps) {
 
         {hardcodedData.length > 0 && (
           <div className="rounded-lg border p-4">
-            <h4 className="text-sm font-semibold mb-4">Valores Hardcodeados</h4>
+            <h4 className="text-sm font-semibold mb-1">Valores Hardcodeados</h4>
+            <p className="text-xs text-muted-foreground mb-3">Valores escritos directamente en vez de usar variables CSS o tokens del design system.</p>
             <ResponsiveContainer width="100%" height={250}>
               <PieChart>
                 <Pie
