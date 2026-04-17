@@ -1,31 +1,35 @@
 import type { W3cValidationResult, W3cIssue } from "@/types/w3c"
 
-const W3C_ENDPOINT = "https://jigsaw.w3.org/css-validator/validator"
-const CORS_PROXY = "https://corsproxy.io/?"
+const W3C_PROXY = "https://lqgdrkwabcjrnnthlrmi.supabase.co/functions/v1/w3c-validator"
 
 export async function validateCssW3c(css: string): Promise<W3cValidationResult> {
-  const params = new URLSearchParams({
-    text: css,
-    output: "json",
-    profile: "css3",
-    warning: "2",
-  })
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 30000)
 
-  const response = await fetch(
-    `${CORS_PROXY}${encodeURIComponent(W3C_ENDPOINT)}`,
-    {
+  try {
+    const response = await fetch(W3C_PROXY, {
       method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: params.toString(),
+      signal: controller.signal,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ css }),
+    })
+
+    clearTimeout(timeout)
+
+    if (!response.ok) {
+      const errBody = await response.text().catch(() => "")
+      throw new Error(`W3C validator respondio con status ${response.status}${errBody ? `: ${errBody.slice(0, 200)}` : ""}`)
     }
-  )
 
-  if (!response.ok) {
-    throw new Error(`W3C validator respondio con status ${response.status}`)
+    const data = await response.json()
+    return parseW3cResponse(data)
+  } catch (err) {
+    clearTimeout(timeout)
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw new Error("La validacion W3C tardo demasiado (timeout 30s). Intenta con un CSS mas pequeno.")
+    }
+    throw err
   }
-
-  const data = await response.json()
-  return parseW3cResponse(data)
 }
 
 interface W3cRawResponse {

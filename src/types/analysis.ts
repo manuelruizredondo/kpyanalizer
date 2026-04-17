@@ -77,6 +77,10 @@ export interface AnalysisResult {
   shorthandCount: number
   longhandCount: number
 
+  // Typography
+  fontWeights: HardcodedValue[]
+  fontFamilies: HardcodedValue[]
+
   // Complexity summary
   complexityRating: 'low' | 'medium' | 'high' | 'critical'
 }

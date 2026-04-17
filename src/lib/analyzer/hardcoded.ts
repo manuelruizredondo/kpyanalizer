@@ -85,7 +85,36 @@ export interface HardcodedResults {
   fontSizes: HardcodedValue[]
   spacingValues: HardcodedValue[]
   zIndexValues: HardcodedValue[]
+  fontWeights: HardcodedValue[]
+  fontFamilies: HardcodedValue[]
   importants: LocationReference[]
+}
+
+// Normalize font-weight keywords to numeric equivalents for grouping
+const FONT_WEIGHT_KEYWORDS: Record<string, string> = {
+  thin: "100", hairline: "100",
+  extralight: "200", "ultra-light": "200",
+  light: "300",
+  normal: "400", regular: "400",
+  medium: "500",
+  semibold: "600", "semi-bold": "600", demibold: "600",
+  bold: "700",
+  extrabold: "800", "ultra-bold": "800", "extra-bold": "800",
+  black: "900", heavy: "900",
+}
+
+function normalizeFontWeight(val: string): string {
+  const lower = val.toLowerCase().trim()
+  return FONT_WEIGHT_KEYWORDS[lower] || lower
+}
+
+function normalizeFontFamily(val: string): string {
+  // Remove quotes and normalize whitespace
+  return val
+    .replace(/["']/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase()
 }
 
 export function extractHardcoded(ast: CssNode): HardcodedResults {
@@ -93,6 +122,8 @@ export function extractHardcoded(ast: CssNode): HardcodedResults {
   const rawFontSizes: { value: string; normalized: string; location: LocationReference }[] = []
   const rawSpacing: { value: string; normalized: string; location: LocationReference }[] = []
   const rawZIndex: { value: string; normalized: string; location: LocationReference }[] = []
+  const rawFontWeights: { value: string; normalized: string; location: LocationReference }[] = []
+  const rawFontFamilies: { value: string; normalized: string; location: LocationReference }[] = []
   const importants: LocationReference[] = []
 
   let currentSelector = ""
@@ -143,6 +174,34 @@ export function extractHardcoded(ast: CssNode): HardcodedResults {
           }
         }
 
+        // font-weight
+        if (node.property === "font-weight") {
+          const val = csstree.generate(node.value).trim()
+          if (!val.includes("var(") && val !== "inherit" && val !== "initial" && val !== "unset") {
+            rawFontWeights.push({
+              value: val,
+              normalized: normalizeFontWeight(val),
+              location: makeLocation(node, currentSelector, node.property),
+            })
+          }
+        }
+
+        // font-family
+        if (node.property === "font-family") {
+          const val = csstree.generate(node.value).trim()
+          if (!val.includes("var(") && val !== "inherit" && val !== "initial" && val !== "unset") {
+            // Split by comma to extract each family individually
+            const families = val.split(",").map(f => f.trim()).filter(Boolean)
+            for (const family of families) {
+              rawFontFamilies.push({
+                value: family.replace(/["']/g, ""),
+                normalized: normalizeFontFamily(family),
+                location: makeLocation(node, currentSelector, node.property),
+              })
+            }
+          }
+        }
+
         // spacing
         if (SPACING_PROPERTIES.has(node.property)) {
           const val = csstree.generate(node.value).trim()
@@ -168,6 +227,8 @@ export function extractHardcoded(ast: CssNode): HardcodedResults {
     fontSizes: groupValues(rawFontSizes),
     spacingValues: groupValues(rawSpacing),
     zIndexValues: groupValues(rawZIndex),
+    fontWeights: groupValues(rawFontWeights),
+    fontFamilies: groupValues(rawFontFamilies),
     importants,
   }
 }

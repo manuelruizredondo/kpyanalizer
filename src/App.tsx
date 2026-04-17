@@ -16,6 +16,7 @@ import { DuplicatesTab } from '@/components/duplicates/DuplicatesTab'
 import { SpecificityTab } from '@/components/specificity/SpecificityTab'
 import { W3cTab } from '@/components/w3c/W3cTab'
 import { DesignSystemTab } from '@/components/designsystem/DesignSystemTab'
+import { TypographyTab } from '@/components/typography/TypographyTab'
 import { useAnalysis } from '@/hooks/useAnalysis'
 import { useW3cValidation } from '@/hooks/useW3cValidation'
 import { useDesignSystem } from '@/hooks/useDesignSystem'
@@ -28,6 +29,7 @@ import {
   Component,
   Code,
   Save,
+  Type,
 } from 'lucide-react'
 
 function AnalyzePage() {
@@ -54,13 +56,18 @@ function AnalyzePage() {
   const handleCssChange = useCallback(
     (newCss: string) => {
       analyze(newCss)
-      w3c.reset()
+      // Auto-run local validation when CSS is pasted
+      if (newCss.trim()) {
+        w3c.validate(newCss, 'local')
+      } else {
+        w3c.reset()
+      }
     },
     [analyze, w3c]
   )
 
-  const handleW3cValidate = useCallback(() => {
-    if (css) w3c.validate(css)
+  const handleW3cValidate = useCallback((mode?: import('@/hooks/useW3cValidation').ValidationMode) => {
+    if (css) w3c.validate(css, mode)
   }, [css, w3c])
 
   const handleLoadTokens = useCallback(
@@ -245,7 +252,7 @@ function AnalyzePage() {
 
       {result && (
         <Tabs defaultValue="overview" onValueChange={handleTabChange}>
-          <TabsList className="grid w-full grid-cols-6">
+          <TabsList className="grid w-full grid-cols-7">
             <TabsTrigger value="overview" className="gap-1.5 text-xs">
               <LayoutDashboard className="h-3.5 w-3.5" />
               <span className="hidden sm:inline">Resumen</span>
@@ -261,6 +268,10 @@ function AnalyzePage() {
             <TabsTrigger value="specificity" className="gap-1.5 text-xs">
               <BarChart3 className="h-3.5 w-3.5" />
               <span className="hidden sm:inline">Especificidad</span>
+            </TabsTrigger>
+            <TabsTrigger value="typography" className="gap-1.5 text-xs">
+              <Type className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">Tipografia</span>
             </TabsTrigger>
             <TabsTrigger value="w3c" className="gap-1.5 text-xs">
               <Globe className="h-3.5 w-3.5" />
@@ -285,6 +296,9 @@ function AnalyzePage() {
             <TabsContent value="specificity">
               <SpecificityTab result={result} />
             </TabsContent>
+            <TabsContent value="typography">
+              <TypographyTab result={result} />
+            </TabsContent>
             <TabsContent value="w3c">
               <W3cTab
                 result={w3c.result}
@@ -292,6 +306,8 @@ function AnalyzePage() {
                 error={w3c.error}
                 onValidate={handleW3cValidate}
                 hasCss={!!css}
+                mode={w3c.mode}
+                onModeChange={w3c.setMode}
               />
             </TabsContent>
             <TabsContent value="ds">

@@ -32,6 +32,8 @@ export function analyzeCss(css: string): AnalysisResult {
     fontSizes: hardcoded.fontSizes,
     spacingValues: hardcoded.spacingValues,
     zIndexValues: hardcoded.zIndexValues,
+    fontWeights: hardcoded.fontWeights,
+    fontFamilies: hardcoded.fontFamilies,
     importants: hardcoded.importants,
     duplicateSelectors: dupes.duplicateSelectors,
     duplicateDeclarations: dupes.duplicateDeclarations,

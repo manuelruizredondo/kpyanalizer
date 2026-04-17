@@ -22,6 +22,9 @@ import {
   Area,
   BarChart,
   Bar,
+  PieChart,
+  Pie,
+  Cell,
   XAxis,
   YAxis,
   CartesianGrid,
@@ -48,9 +51,30 @@ import {
   Loader2,
   RefreshCw,
   Info,
+  XCircle,
+  Bold,
+  CheckCircle,
 } from 'lucide-react'
 
 const HG5_URL = 'https://hg5.netlify.app/output.css'
+
+// ─── Font classification (same logic as TypographyTab) ──────────
+const DS_FONT_KEYWORD = 'suisse'
+const GENERIC_FAMILIES = new Set([
+  'serif', 'sans-serif', 'monospace', 'cursive', 'fantasy', 'system-ui',
+  'ui-serif', 'ui-sans-serif', 'ui-monospace', 'ui-rounded', 'math',
+  'emoji', 'fangsong', 'inherit', 'initial', 'unset', 'revert',
+  'arial', 'helvetica', 'times new roman', 'times', 'courier new',
+  'courier', 'georgia', 'verdana', 'tahoma', 'trebuchet ms',
+  'palatino linotype', 'palatino', 'impact', 'lucida console',
+  'lucida sans unicode', 'lucida grande', 'segoe ui', 'roboto',
+])
+function classifyFamily(normalized: string): 'ds' | 'generic' | 'eliminate' {
+  const lower = normalized.toLowerCase().replace(/['"]/g, '').trim()
+  if (lower.includes(DS_FONT_KEYWORD)) return 'ds'
+  if (GENERIC_FAMILIES.has(lower)) return 'generic'
+  return 'eliminate'
+}
 const CORS_PROXY = 'https://lqgdrkwabcjrnnthlrmi.supabase.co/functions/v1/cors-proxy'
 
 // ─── Info Tooltip ──────────────────────────────────────────────────
@@ -554,26 +578,28 @@ export function DashboardPage() {
           )}
         </div>
 
-        <div className="space-y-2">
+        <div className="space-y-1">
           {projects.map((project) => (
             <div
               key={project.id}
-              className={`p-3 rounded-lg cursor-pointer transition-colors ${
+              onClick={() => setSelectedProjectId(project.id)}
+              className={`group relative flex items-center gap-2 px-3 py-2.5 rounded-lg cursor-pointer transition-colors ${
                 selectedProjectId === project.id ? 'bg-[#e0f5ec]' : 'hover:bg-[#f8f9fa]'
               }`}
             >
-              <button onClick={() => setSelectedProjectId(project.id)} className="w-full text-left">
-                <h3 className="font-medium text-[#1a2e23] text-sm">{project.name}</h3>
+              <div className="min-w-0 flex-1">
+                <h3 className="font-medium text-[#1a2e23] text-sm truncate">{project.name}</h3>
                 {project.description && (
                   <p className="text-xs text-[#3d5a4a] mt-0.5 truncate">{project.description}</p>
                 )}
-              </button>
+              </div>
               {profile?.role === 'super_admin' && (
                 <button
-                  onClick={() => handleDeleteProject(project.id)}
-                  className="mt-2 w-full text-xs text-[#9e2b25] hover:text-[#7a1e1a] py-1"
+                  onClick={(e) => { e.stopPropagation(); handleDeleteProject(project.id) }}
+                  className="shrink-0 p-1 rounded text-[#9e2b25]/0 group-hover:text-[#9e2b25] hover:!text-[#7a1e1a] hover:bg-[#fef2f1] transition-all"
+                  title="Eliminar proyecto"
                 >
-                  Eliminar proyecto
+                  <Trash2 size={14} />
                 </button>
               )}
             </div>
@@ -680,91 +706,195 @@ export function DashboardPage() {
               </div>
 
               {/* ══════════════════════════════════════════════════════════════
-                   SECTION 2 — W3C Validation + Design System Coverage
+                   SECTION 2 — Typography, CSS Validation & Design System Coverage
                  ══════════════════════════════════════════════════════════════ */}
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                {/* W3C Validation */}
-                <Card className="p-6">
-                  <div className="flex items-center gap-2 mb-4">
-                    <ShieldCheck size={20} className="text-[#006c48]" />
-                    <h3 className="text-lg font-semibold text-[#1a2e23]">Validacion W3C</h3>
-                    <InfoTooltip text="Resultado de validar tu CSS contra el estandar W3C. Errores indican sintaxis invalida; warnings son advertencias de buenas practicas." />
-                  </div>
-                  {latestDetail?.w3c_validation ? (
-                    <div className="space-y-4">
-                      <div className="flex items-center gap-6">
-                        <div className="text-center">
-                          <p className="text-3xl font-bold text-[#9e2b25]">
-                            {latestDetail.w3c_validation.errorCount}
-                          </p>
-                          <p className="text-xs text-[#3d5a4a]">Errores</p>
-                        </div>
-                        <div className="text-center">
-                          <p className="text-3xl font-bold text-[#a67c00]">
-                            {latestDetail.w3c_validation.warningCount}
-                          </p>
-                          <p className="text-xs text-[#3d5a4a]">Warnings</p>
-                        </div>
-                        <div className="ml-auto">
-                          <Badge
-                            className={
-                              latestDetail.w3c_validation.valid
-                                ? 'bg-[#e0f5ec] text-[#006c48]'
-                                : 'bg-[#fef2f1] text-[#9e2b25]'
-                            }
-                          >
-                            {latestDetail.w3c_validation.valid ? 'Valido' : 'Con errores'}
-                          </Badge>
-                        </div>
-                      </div>
-                      {latestDetail.w3c_validation.errors.length > 0 && (
-                        <div className="mt-3 max-h-40 overflow-y-auto space-y-1">
-                          {latestDetail.w3c_validation.errors.slice(0, 5).map((err, i) => (
-                            <p key={i} className="text-xs text-[#9e2b25] bg-[#fef2f1] rounded px-2 py-1">
-                              {err}
-                            </p>
-                          ))}
-                          {latestDetail.w3c_validation.errors.length > 5 && (
-                            <p className="text-xs text-[#3d5a4a]">
-                              +{latestDetail.w3c_validation.errors.length - 5} errores mas...
-                            </p>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  ) : (
-                    <p className="text-sm text-[#3d5a4a]">
-                      No hay datos de validacion W3C. Ejecuta la validacion desde la seccion Analizar.
-                    </p>
-                  )}
-                </Card>
+              {(() => {
+                const ad = latestDetail?.analysis_data as AnalysisResult | undefined
+                const families = ad?.fontFamilies || []
+                const weights = ad?.fontWeights || []
+                const sizes = ad?.fontSizes || []
 
-                {/* Design System Coverage */}
-                <Card className="p-6">
-                  <div className="flex items-center gap-2 mb-4">
-                    <Palette size={20} className="text-[#006c48]" />
-                    <h3 className="text-lg font-semibold text-[#1a2e23]">Cobertura Design System</h3>
-                    <InfoTooltip text="Porcentaje de valores en tu CSS (colores, tipografia, spacing, z-index) que coinciden con los tokens de tu Design System. 100% = todo alineado." />
-                  </div>
-                  {latestDetail?.ds_coverage ? (
-                    <div className="space-y-4">
-                      <div className="flex items-center gap-4">
-                        <ScoreRing score={Math.round(latestDetail.ds_coverage.overallCoverage)} size={100} />
-                        <div className="flex-1 space-y-3">
-                          <CoverageBar label="Colores" value={latestDetail.ds_coverage.colors} color="#006c48" />
-                          <CoverageBar label="Tipografia" value={latestDetail.ds_coverage.fontSizes} color="#2a9d6e" />
-                          <CoverageBar label="Spacing" value={latestDetail.ds_coverage.spacing} color="#5cc49a" />
-                          <CoverageBar label="Z-index" value={latestDetail.ds_coverage.zIndex} color="#a67c00" />
+                // Classify families
+                const dsCount = families.filter(f => classifyFamily(f.normalized || f.value) === 'ds').reduce((s, f) => s + f.count, 0)
+                const genericCount = families.filter(f => classifyFamily(f.normalized || f.value) === 'generic').reduce((s, f) => s + f.count, 0)
+                const eliminateList = families.filter(f => classifyFamily(f.normalized || f.value) === 'eliminate')
+                const eliminateCount = eliminateList.reduce((s, f) => s + f.count, 0)
+                const totalFamilyUsages = dsCount + genericCount + eliminateCount
+                const suissePct = totalFamilyUsages > 0 ? Math.round((dsCount / totalFamilyUsages) * 100) : 0
+
+                const pieData = [
+                  { name: 'Suisse (DS)', value: dsCount, color: '#006c48' },
+                  { name: 'Genericas', value: genericCount, color: '#a67c00' },
+                  { name: 'A eliminar', value: eliminateCount, color: '#9e2b25' },
+                ].filter(d => d.value > 0)
+
+                const w3cVal = latestDetail?.w3c_validation
+
+                return (
+                  <div className="space-y-6">
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                      {/* Typography Card */}
+                      <Card className="p-6">
+                        <div className="flex items-center gap-2 mb-4">
+                          <Type size={20} className="text-[#006c48]" />
+                          <h3 className="text-lg font-semibold text-[#1a2e23]">Tipografia</h3>
+                          <InfoTooltip text="Resumen tipografico del CSS: familias usadas clasificadas en Design System (Suisse), genericas y a eliminar. Tambien muestra pesos y tamanos de fuente." />
                         </div>
-                      </div>
+
+                        {families.length > 0 ? (
+                          <div className="space-y-4">
+                            <div className="flex items-start gap-4">
+                              {/* Mini pie chart */}
+                              {pieData.length > 0 && (
+                                <div className="shrink-0">
+                                  <ResponsiveContainer width={90} height={90}>
+                                    <PieChart>
+                                      <Pie data={pieData} dataKey="value" cx="50%" cy="50%" innerRadius={24} outerRadius={42} paddingAngle={2}>
+                                        {pieData.map((d, i) => (
+                                          <Cell key={i} fill={d.color} />
+                                        ))}
+                                      </Pie>
+                                      <Tooltip formatter={(v: number, name: string) => [`${v} usos`, name]} />
+                                    </PieChart>
+                                  </ResponsiveContainer>
+                                </div>
+                              )}
+
+                              <div className="flex-1 space-y-2">
+                                {/* Suisse coverage */}
+                                <div className="flex items-center justify-between">
+                                  <span className="text-xs text-[#3d5a4a]">Cobertura Suisse</span>
+                                  <Badge className={suissePct >= 70 ? 'bg-[#e0f5ec] text-[#006c48]' : suissePct >= 40 ? 'bg-[#fef6e0] text-[#a67c00]' : 'bg-[#fef2f1] text-[#9e2b25]'}>
+                                    {suissePct}%
+                                  </Badge>
+                                </div>
+                                <div className="h-1.5 bg-[#f0f2f1] rounded-full overflow-hidden">
+                                  <div className="h-full rounded-full bg-[#006c48] transition-all" style={{ width: `${suissePct}%` }} />
+                                </div>
+
+                                {/* Quick stats */}
+                                <div className="grid grid-cols-3 gap-1.5 pt-1">
+                                  <div className="text-center p-1.5 bg-[#f8f9fa] rounded">
+                                    <p className="text-sm font-bold text-[#1a2e23]">{families.length}</p>
+                                    <p className="text-[9px] text-[#3d5a4a]">Familias</p>
+                                  </div>
+                                  <div className="text-center p-1.5 bg-[#f8f9fa] rounded">
+                                    <p className="text-sm font-bold text-[#1a2e23]">{weights.length}</p>
+                                    <p className="text-[9px] text-[#3d5a4a]">Pesos</p>
+                                  </div>
+                                  <div className="text-center p-1.5 bg-[#f8f9fa] rounded">
+                                    <p className="text-sm font-bold text-[#1a2e23]">{sizes.length}</p>
+                                    <p className="text-[9px] text-[#3d5a4a]">Tamanos</p>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* Fonts to eliminate */}
+                            {eliminateList.length > 0 && (
+                              <div className="flex items-start gap-2 p-2 bg-[#fef2f1] rounded-lg">
+                                <XCircle size={14} className="text-[#9e2b25] shrink-0 mt-0.5" />
+                                <div className="min-w-0">
+                                  <p className="text-xs font-semibold text-[#9e2b25]">{eliminateList.length} fuente{eliminateList.length !== 1 ? 's' : ''} a eliminar</p>
+                                  <p className="text-[10px] text-[#9e2b25]/70 truncate">
+                                    {eliminateList.slice(0, 3).map(f => f.value.replace(/['"]/g, '')).join(', ')}
+                                    {eliminateList.length > 3 ? ` +${eliminateList.length - 3}` : ''}
+                                  </p>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          <p className="text-sm text-[#3d5a4a]">Sin datos tipograficos en este escaneo.</p>
+                        )}
+                      </Card>
+
+                      {/* CSS Validation Card */}
+                      <Card className="p-6">
+                        <div className="flex items-center gap-2 mb-4">
+                          <ShieldCheck size={20} className="text-[#006c48]" />
+                          <h3 className="text-lg font-semibold text-[#1a2e23]">Validacion CSS</h3>
+                          <InfoTooltip text="Errores y warnings detectados por el validador. Errores = sintaxis invalida o propiedades desconocidas; warnings = !important, vendor prefixes, reglas vacias." />
+                        </div>
+
+                        {w3cVal ? (
+                          <div className="space-y-3">
+                            <div className="flex items-center gap-3">
+                              {w3cVal.valid ? (
+                                <Badge className="gap-1.5 bg-[#e0f5ec] text-[#006c48]">
+                                  <CheckCircle size={12} />
+                                  CSS Valido
+                                </Badge>
+                              ) : (
+                                <Badge className="gap-1.5 bg-[#fef2f1] text-[#9e2b25]">
+                                  <XCircle size={12} />
+                                  Con errores
+                                </Badge>
+                              )}
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-3">
+                              <div className="text-center p-3 rounded-xl bg-[#fef2f1]/50">
+                                <p className="text-2xl font-bold text-[#9e2b25]">{w3cVal.errorCount}</p>
+                                <p className="text-[10px] text-[#3d5a4a]">Errores</p>
+                              </div>
+                              <div className="text-center p-3 rounded-xl bg-[#fef6e0]/50">
+                                <p className="text-2xl font-bold text-[#a67c00]">{w3cVal.warningCount}</p>
+                                <p className="text-[10px] text-[#3d5a4a]">Warnings</p>
+                              </div>
+                            </div>
+
+                            {w3cVal.errors && w3cVal.errors.length > 0 && (
+                              <div className="space-y-1 max-h-24 overflow-y-auto">
+                                {w3cVal.errors.slice(0, 3).map((err: string, i: number) => (
+                                  <p key={i} className="text-[10px] text-[#9e2b25] bg-[#fef2f1] rounded px-2 py-1 truncate">
+                                    {err}
+                                  </p>
+                                ))}
+                                {w3cVal.errors.length > 3 && (
+                                  <p className="text-[10px] text-[#3d5a4a]">+{w3cVal.errors.length - 3} mas...</p>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          <div className="text-center py-6">
+                            <ShieldCheck size={28} className="mx-auto mb-2 text-[#3d5a4a]/20" />
+                            <p className="text-xs text-[#3d5a4a]">Sin datos. Ejecuta la validacion desde "Analizar".</p>
+                          </div>
+                        )}
+                      </Card>
+
+                      {/* Design System Coverage */}
+                      <Card className="p-6">
+                        <div className="flex items-center gap-2 mb-4">
+                          <Palette size={20} className="text-[#006c48]" />
+                          <h3 className="text-lg font-semibold text-[#1a2e23]">Cobertura DS</h3>
+                          <InfoTooltip text="Porcentaje de valores en tu CSS (colores, tipografia, spacing, z-index) que coinciden con los tokens de tu Design System. 100% = todo alineado." />
+                        </div>
+                        {latestDetail?.ds_coverage ? (
+                          <div className="space-y-3">
+                            <div className="flex items-center gap-4">
+                              <ScoreRing score={Math.round(latestDetail.ds_coverage.overallCoverage)} size={80} />
+                              <div className="flex-1 space-y-2">
+                                <CoverageBar label="Colores" value={latestDetail.ds_coverage.colors} color="#006c48" />
+                                <CoverageBar label="Tipografia" value={latestDetail.ds_coverage.fontSizes} color="#2a9d6e" />
+                                <CoverageBar label="Spacing" value={latestDetail.ds_coverage.spacing} color="#5cc49a" />
+                                <CoverageBar label="Z-index" value={latestDetail.ds_coverage.zIndex} color="#a67c00" />
+                              </div>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="text-center py-6">
+                            <Palette size={28} className="mx-auto mb-2 text-[#3d5a4a]/20" />
+                            <p className="text-xs text-[#3d5a4a]">Sin datos. Carga tus tokens DS desde "Analizar".</p>
+                          </div>
+                        )}
+                      </Card>
                     </div>
-                  ) : (
-                    <p className="text-sm text-[#3d5a4a]">
-                      No hay datos de cobertura. Carga tus tokens de Design System desde la seccion Analizar.
-                    </p>
-                  )}
-                </Card>
-              </div>
+                  </div>
+                )
+              })()}
 
               {/* ══════════════════════════════════════════════════════════════
                    SECTION 2b — HolyGrail5 Live Comparison

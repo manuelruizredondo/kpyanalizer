@@ -36,7 +36,24 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // Check for existing session - use getSession() (local) to avoid network hangs
     const checkSession = async () => {
       try {
-        const { data: { session }, error: sessionError } = await supabase.auth.getSession()
+        // First get local session
+        let { data: { session }, error: sessionError } = await supabase.auth.getSession()
+
+        // Try to refresh the token to get updated user_metadata (non-blocking)
+        if (session) {
+          try {
+            const refreshResult = await Promise.race([
+              supabase.auth.refreshSession(),
+              new Promise<null>((resolve) => setTimeout(() => resolve(null), 4000)),
+            ])
+            if (refreshResult && 'data' in refreshResult && refreshResult.data?.session) {
+              session = refreshResult.data.session
+              console.log('[Auth] Token refreshed, metadata updated')
+            }
+          } catch {
+            console.warn('[Auth] Token refresh failed, using cached session')
+          }
+        }
 
         if (sessionError || !session) {
           if (mounted) {
@@ -45,13 +62,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           }
         } else if (mounted) {
           setUser(session.user)
-          // Set immediate fallback profile from JWT data
+          // Set immediate fallback profile from JWT metadata (synced from profiles table)
+          const meta = session.user.user_metadata || {}
           setProfile({
             id: session.user.id,
             email: session.user.email || '',
-            full_name: session.user.user_metadata?.full_name || session.user.email?.split('@')[0] || '',
-            role: 'editor',
+            full_name: meta.full_name || session.user.email?.split('@')[0] || '',
+            role: (meta.role === 'super_admin' ? 'super_admin' : 'editor'),
           })
+          console.log('[Auth] JWT fallback profile:', meta.full_name, meta.role)
           // Then try to fetch full profile from DB (may fail silently)
           fetchUserProfile(session.user.id, session.access_token)
         }
@@ -71,11 +90,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (!mounted) return
       if (session?.user) {
         setUser(session.user)
+        const meta = session.user.user_metadata || {}
         setProfile({
           id: session.user.id,
           email: session.user.email || '',
-          full_name: session.user.user_metadata?.full_name || session.user.email?.split('@')[0] || '',
-          role: 'editor',
+          full_name: meta.full_name || session.user.email?.split('@')[0] || '',
+          role: (meta.role === 'super_admin' ? 'super_admin' : 'editor'),
         })
         fetchUserProfile(session.user.id, session.access_token)
       } else {
