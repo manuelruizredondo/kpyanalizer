@@ -1,7 +1,9 @@
 import { useState } from "react"
 import { FileDropZone } from "./FileDropZone"
 import { Button } from "@/components/ui/button"
-import { FileCode, Trash2, Loader2 } from "lucide-react"
+import { FileCode, Trash2, Loader2, Globe, Download } from "lucide-react"
+
+const CORS_PROXY = "https://lqgdrkwabcjrnnthlrmi.supabase.co/functions/v1/cors-proxy"
 
 interface CssInputProps {
   value: string
@@ -11,6 +13,9 @@ interface CssInputProps {
 
 export function CssInput({ value, onChange, isAnalyzing }: CssInputProps) {
   const [localValue, setLocalValue] = useState(value)
+  const [urlInput, setUrlInput] = useState("")
+  const [urlLoading, setUrlLoading] = useState(false)
+  const [urlError, setUrlError] = useState<string | null>(null)
 
   function handleTextChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
     const text = e.target.value
@@ -26,6 +31,68 @@ export function CssInput({ value, onChange, isAnalyzing }: CssInputProps) {
   function handleClear() {
     setLocalValue("")
     onChange("")
+    setUrlInput("")
+    setUrlError(null)
+  }
+
+  async function handleLoadFromUrl() {
+    const url = urlInput.trim()
+    if (!url) return
+
+    // Basic URL validation
+    try {
+      new URL(url)
+    } catch {
+      setUrlError("URL no valida. Asegurate de incluir https://")
+      return
+    }
+
+    if (!url.endsWith(".css") && !url.includes(".css?")) {
+      // Allow but warn
+      const proceed = window.confirm(
+        "La URL no termina en .css. ¿Quieres intentar descargarla de todos modos?"
+      )
+      if (!proceed) return
+    }
+
+    setUrlLoading(true)
+    setUrlError(null)
+
+    try {
+      const proxyUrl = `${CORS_PROXY}?url=${encodeURIComponent(url)}`
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), 30000)
+
+      const resp = await fetch(proxyUrl, { signal: controller.signal })
+      clearTimeout(timeout)
+
+      if (!resp.ok) {
+        throw new Error(`Error ${resp.status}: no se pudo descargar el CSS`)
+      }
+
+      const css = await resp.text()
+
+      if (!css.trim()) {
+        throw new Error("El archivo descargado esta vacio")
+      }
+
+      // Check it looks like CSS (basic heuristic)
+      if (css.trim().startsWith("<!DOCTYPE") || css.trim().startsWith("<html")) {
+        throw new Error("La URL devolvio HTML en lugar de CSS. Verifica la URL.")
+      }
+
+      setLocalValue(css)
+      onChange(css)
+      setUrlError(null)
+    } catch (e) {
+      if (e instanceof DOMException && e.name === "AbortError") {
+        setUrlError("Timeout: la descarga tardo demasiado (>30s)")
+      } else {
+        setUrlError(e instanceof Error ? e.message : "Error al descargar el CSS")
+      }
+    } finally {
+      setUrlLoading(false)
+    }
   }
 
   const size = localValue ? `${(new Blob([localValue]).size / 1024).toFixed(1)} KB` : "0 KB"
@@ -56,6 +123,44 @@ export function CssInput({ value, onChange, isAnalyzing }: CssInputProps) {
           )}
         </div>
       </div>
+
+      {/* URL loader */}
+      <div className="flex items-center gap-2">
+        <div className="relative flex-1">
+          <Globe className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[#3d5a4a]/50" />
+          <input
+            type="url"
+            value={urlInput}
+            onChange={(e) => { setUrlInput(e.target.value); setUrlError(null) }}
+            onKeyDown={(e) => { if (e.key === "Enter") handleLoadFromUrl() }}
+            placeholder="https://ejemplo.com/styles.css"
+            className="w-full pl-8 pr-3 py-2 rounded-md border border-input bg-background text-xs font-mono ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            disabled={urlLoading}
+          />
+        </div>
+        <Button
+          onClick={handleLoadFromUrl}
+          disabled={urlLoading || !urlInput.trim()}
+          size="sm"
+          className="gap-1.5 shrink-0"
+        >
+          {urlLoading ? (
+            <>
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              Descargando...
+            </>
+          ) : (
+            <>
+              <Download className="h-3.5 w-3.5" />
+              Cargar CSS
+            </>
+          )}
+        </Button>
+      </div>
+      {urlError && (
+        <p className="text-xs text-[#9e2b25] bg-[#fef2f1] rounded px-3 py-1.5">{urlError}</p>
+      )}
+
       {!localValue ? (
         <FileDropZone onFileContent={handleFileDrop} accept=".css" className="min-h-[200px]">
           <div className="flex flex-col items-center justify-center gap-2 p-8 text-[#3d5a4a]">
