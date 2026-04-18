@@ -2,7 +2,7 @@ import { useMemo } from "react"
 import type { AnalysisResult } from "@/types/analysis"
 import { MetricCard } from "@/components/overview/MetricCard"
 import {
-  BarChart, Bar, LineChart, Line, AreaChart, Area,
+  BarChart, Bar, Line, AreaChart, Area,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine
 } from "recharts"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"

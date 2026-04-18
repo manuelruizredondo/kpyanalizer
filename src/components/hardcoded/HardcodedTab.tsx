@@ -41,20 +41,6 @@ interface HardcodedTabProps {
   dsTokens?: DsTokenSet | null
 }
 
-// ─── Color chip (swatch + value + count) ─────────────────────────
-function ColorChip({ item }: { item: HardcodedValue }) {
-  return (
-    <div className="inline-flex items-center gap-1.5 bg-[#f8f9fa] rounded-lg px-2.5 py-1.5">
-      <div
-        className="w-5 h-5 rounded border border-black/10 shrink-0"
-        style={{ backgroundColor: item.normalized }}
-      />
-      <span className="text-xs font-mono text-[#1a2e23]">{item.value}</span>
-      <Badge variant="secondary" className="text-[10px] px-1.5 py-0">{item.count}x</Badge>
-    </div>
-  )
-}
-
 // ─── Value chip (value + count) ──────────────────────────────────
 function ValueChip({ item }: { item: HardcodedValue }) {
   return (

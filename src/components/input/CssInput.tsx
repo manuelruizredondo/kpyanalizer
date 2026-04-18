@@ -1,7 +1,7 @@
 import { useState } from "react"
 import { FileDropZone } from "./FileDropZone"
 import { Button } from "@/components/ui/button"
-import { FileCode, Trash2, Loader2, Globe, Download, ExternalLink } from "lucide-react"
+import { FileCode, Trash2, Loader2, Globe, Download } from "lucide-react"
 
 const CORS_PROXY = "https://lqgdrkwabcjrnnthlrmi.supabase.co/functions/v1/cors-proxy"
 

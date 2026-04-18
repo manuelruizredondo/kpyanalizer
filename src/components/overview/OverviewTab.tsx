@@ -550,7 +550,7 @@ export function OverviewTab({ result }: OverviewTabProps) {
                 <CartesianGrid strokeDasharray="3 3" stroke="#f0f2f1" />
                 <XAxis type="number" tick={{ fontSize: 10, fill: C.muted }} />
                 <YAxis dataKey="name" type="category" tick={{ fontSize: 10, fill: C.muted }} width={120} />
-                <Tooltip contentStyle={TT_STYLE} formatter={(val: number, _: string, props: { payload?: { full?: string } }) => [val, props.payload?.full || 'Usos']} />
+                <Tooltip contentStyle={TT_STYLE} formatter={(val: any, _: any, props: any) => [val, props?.payload?.full || 'Usos']} />
                 <Bar dataKey="value" radius={[0, 4, 4, 0]} name="Usos">
                   {familyData.map((f, i) => {
                     const lower = f.full.toLowerCase()
@@ -604,7 +604,7 @@ export function OverviewTab({ result }: OverviewTabProps) {
                 <CartesianGrid strokeDasharray="3 3" stroke="#f0f2f1" />
                 <XAxis type="number" tick={{ fontSize: 10, fill: C.muted }} />
                 <YAxis dataKey="name" type="category" tick={{ fontSize: 9, fill: C.muted }} width={160} />
-                <Tooltip contentStyle={TT_STYLE} formatter={(val: number, _: string, props: { payload?: { full?: string } }) => [val, props.payload?.full || 'Usos']} />
+                <Tooltip contentStyle={TT_STYLE} formatter={(val: any, _: any, props: any) => [val, props?.payload?.full || 'Usos']} />
                 <Bar dataKey="value" fill={C.green3} radius={[0, 4, 4, 0]} name="Usos" />
               </BarChart>
             </ResponsiveContainer>

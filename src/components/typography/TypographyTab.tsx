@@ -427,9 +427,9 @@ export function TypographyTab({ result }: TypographyTabProps) {
                     outerRadius={95}
                     innerRadius={50}
                     dataKey="value"
-                    label={({ name, value }) => {
-                      const pct = totalFamilyUsages > 0 ? (value / totalFamilyUsages * 100).toFixed(0) : 0
-                      const short = name.length > 20 ? name.slice(0, 20) + '...' : name
+                    label={({ name, value }: { name?: string; value?: number }) => {
+                      const pct = totalFamilyUsages > 0 && value ? (value / totalFamilyUsages * 100).toFixed(0) : 0
+                      const short = (name || '').length > 20 ? (name || '').slice(0, 20) + '...' : (name || '')
                       return `${short} (${pct}%)`
                     }}
                     labelLine={{ stroke: "#3d5a4a", strokeWidth: 1 }}

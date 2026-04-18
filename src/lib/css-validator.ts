@@ -53,10 +53,10 @@ export function validateCssLocal(css: string): W3cValidationResult {
       parseRulePrelude: true,
       parseValue: true,
       parseCustomProperty: false, // Don't validate custom property values
-      onParseError: (err: { message: string; line: number; column: number }) => {
+      onParseError: (err: any) => {
         parseErrors.push({
-          message: err.message,
-          line: err.line ?? 0,
+          message: err.message ?? String(err),
+          line: err.line ?? err.offset ?? 0,
           column: err.column ?? 0,
         })
       },
@@ -90,7 +90,7 @@ export function validateCssLocal(css: string): W3cValidationResult {
   // ── Phase 2: Lexer validation (property + value checking) ──
   const lexer = csstree.lexer
   let currentSelector = ""
-  let charsetFound = false
+  let _charsetFound = false
   let firstRuleSeen = false
   let insideFontFace = false
 
@@ -135,7 +135,7 @@ export function validateCssLocal(css: string): W3cValidationResult {
               type: "charset-position",
             })
           }
-          charsetFound = true
+          _charsetFound = true
           firstRuleSeen = true
         }
       }
