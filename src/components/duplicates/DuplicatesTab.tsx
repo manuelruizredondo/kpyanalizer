@@ -14,7 +14,8 @@ interface DuplicatesTabProps {
 
 export function DuplicatesTab({ result }: DuplicatesTabProps) {
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
       {/* Duplicate Selectors */}
       <section>
         <h3 className="text-sm font-semibold mb-3 flex items-center gap-2">
@@ -89,7 +90,9 @@ export function DuplicatesTab({ result }: DuplicatesTabProps) {
           </p>
         )}
       </section>
+      </div>
 
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
       {/* Media Queries */}
       <section>
         <h3 className="text-sm font-semibold mb-3 flex items-center gap-2">
@@ -151,6 +154,7 @@ export function DuplicatesTab({ result }: DuplicatesTabProps) {
           </Table>
         )}
       </section>
+      </div>
     </div>
   )
 }

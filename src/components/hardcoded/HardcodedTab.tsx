@@ -1,4 +1,4 @@
-import { useMemo } from "react"
+import { useMemo, useState } from "react"
 import type { AnalysisResult, HardcodedValue } from "@/types/analysis"
 import type { DsCoverageResult, DsTokenSet } from "@/types/design-system"
 import { Badge } from "@/components/ui/badge"
@@ -8,6 +8,32 @@ import {
   TableHeader, TableRow
 } from "@/components/ui/table"
 import { AlertTriangle, CheckCircle, ArrowRight } from "lucide-react"
+
+const CHIP_LIMIT = 20
+
+function ExpandableChips({ items, renderChip, limit = CHIP_LIMIT }: {
+  items: HardcodedValue[]
+  renderChip: (item: HardcodedValue, index: number) => React.ReactNode
+  limit?: number
+}) {
+  const [expanded, setExpanded] = useState(false)
+  const visible = expanded ? items : items.slice(0, limit)
+  const remaining = items.length - limit
+
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {visible.map((item, i) => renderChip(item, i))}
+      {remaining > 0 && (
+        <button
+          onClick={() => setExpanded(!expanded)}
+          className="text-xs font-medium text-[#006c48] hover:text-[#004d33] self-center px-2.5 py-1.5 rounded-lg hover:bg-[#e0f5ec] transition-colors cursor-pointer"
+        >
+          {expanded ? 'Ver menos' : `+${remaining} mas`}
+        </button>
+      )}
+    </div>
+  )
+}
 
 interface HardcodedTabProps {
   result: AnalysisResult
@@ -43,22 +69,22 @@ function ValueChip({ item }: { item: HardcodedValue }) {
 // DS rule: z-index should go in increments of 1000 (0, 1000, 2000…).
 // Each depth range is reserved for a specific type of UI element.
 
-const DEPTH_DEFINITIONS: Record<number, { name: string; description: string; icon: string }> = {
-  [-1]:  { name: 'Negativos',            description: 'Elementos ocultos detras del contenido base, fondos decorativos',                icon: '⬇' },
-  0:     { name: 'Contenido base',       description: 'Flujo normal del documento, elementos inline, texto, imagenes',                  icon: '📄' },
-  1000:  { name: 'Elementos elevados',   description: 'Cards flotantes, badges, elementos con sombra que necesitan sobresalir',         icon: '🃏' },
-  2000:  { name: 'Dropdowns y popups',   description: 'Menus desplegables, selects abiertos, autocompletado, popovers',                icon: '📋' },
-  3000:  { name: 'Headers y barras',     description: 'Headers fijos (sticky), barras de navegacion, toolbars persistentes',            icon: '📌' },
-  4000:  { name: 'Sidebars y drawers',   description: 'Paneles laterales, drawers deslizantes, navegacion off-canvas',                  icon: '📂' },
-  5000:  { name: 'Overlays',             description: 'Fondos oscuros (backdrop), capas semi-transparentes detras de modales',          icon: '🌫' },
-  6000:  { name: 'Modales y dialogos',   description: 'Ventanas modales, dialogos de confirmacion, lightboxes',                        icon: '💬' },
-  7000:  { name: 'Tooltips y toasts',    description: 'Tooltips, notificaciones toast, snackbars, hints flotantes',                     icon: '💡' },
-  8000:  { name: 'Alertas criticas',     description: 'Banners de error critico, alertas de sesion expirada, avisos legales',           icon: '🚨' },
-  9000:  { name: 'Sistema / max',        description: 'Loaders a pantalla completa, splash screens, debuggers, reservado para el sistema', icon: '⚙️' },
+const DEPTH_DEFINITIONS: Record<number, { name: string; description: string }> = {
+  [-1]:  { name: 'Negativos',            description: 'Elementos ocultos detras del contenido base, fondos decorativos'                },
+  0:     { name: 'Contenido base',       description: 'Flujo normal del documento, elementos inline, texto, imagenes'                  },
+  1000:  { name: 'Elementos elevados',   description: 'Cards flotantes, badges, elementos con sombra que necesitan sobresalir'         },
+  2000:  { name: 'Dropdowns y popups',   description: 'Menus desplegables, selects abiertos, autocompletado, popovers'                },
+  3000:  { name: 'Headers y barras',     description: 'Headers fijos (sticky), barras de navegacion, toolbars persistentes'            },
+  4000:  { name: 'Sidebars y drawers',   description: 'Paneles laterales, drawers deslizantes, navegacion off-canvas'                  },
+  5000:  { name: 'Overlays',             description: 'Fondos oscuros (backdrop), capas semi-transparentes detras de modales'          },
+  6000:  { name: 'Modales y dialogos',   description: 'Ventanas modales, dialogos de confirmacion, lightboxes'                        },
+  7000:  { name: 'Tooltips y toasts',    description: 'Tooltips, notificaciones toast, snackbars, hints flotantes'                     },
+  8000:  { name: 'Alertas criticas',     description: 'Banners de error critico, alertas de sesion expirada, avisos legales'           },
+  9000:  { name: 'Sistema / max',        description: 'Loaders a pantalla completa, splash screens, debuggers, reservado para el sistema' },
 }
 
 // Any depth beyond our definitions
-const UNKNOWN_DEPTH = { name: 'Fuera de rango', description: 'Valores excesivamente altos que rompen la escala. Deben reducirse.', icon: '⚠️' }
+const UNKNOWN_DEPTH = { name: 'Fuera de rango', description: 'Valores excesivamente altos que rompen la escala. Deben reducirse.' }
 
 function ZIndexSection({ items, total }: { items: HardcodedValue[]; total: number }) {
   const analysis = useMemo(() => {
@@ -130,7 +156,6 @@ function ZIndexSection({ items, total }: { items: HardcodedValue[]; total: numbe
               return (
                 <div className="rounded-lg border border-[#9e2b25]/10 overflow-hidden">
                   <div className="flex items-center gap-2 px-3 py-2 bg-[#fef2f1]/50">
-                    <span className="text-sm">{def.icon}</span>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
                         <span className="text-[11px] font-semibold text-[#9e2b25]">Negativos</span>
@@ -165,24 +190,23 @@ function ZIndexSection({ items, total }: { items: HardcodedValue[]; total: numbe
                 >
                   {/* Layer header */}
                   <div className={`flex items-center gap-2 px-3 py-2 ${hasValues ? 'bg-[#f8f9fa]' : 'bg-[#fafafa]'}`}>
-                    <span className={`text-sm ${!hasValues ? 'opacity-40' : ''}`}>{def.icon}</span>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
-                        <span className={`text-[11px] font-semibold ${hasValues ? 'text-[#1a2e23]' : 'text-[#3d5a4a]/40'}`}>
+                        <span className="text-[11px] font-semibold text-[#1a2e23]">
                           {label}
                         </span>
-                        <span className={`text-[10px] font-medium ${hasValues ? 'text-[#006c48]' : 'text-[#3d5a4a]/40'}`}>
+                        <span className={`text-[10px] font-medium ${hasValues ? 'text-[#006c48]' : 'text-[#3d5a4a]'}`}>
                           {def.name}
                         </span>
                       </div>
-                      <p className={`text-[10px] leading-tight ${hasValues ? 'text-[#3d5a4a]' : 'text-[#3d5a4a]/30'}`}>
+                      <p className="text-[10px] leading-tight text-[#3d5a4a]">
                         {def.description}
                       </p>
                     </div>
                     {hasValues ? (
                       <Badge variant="secondary" className="text-[10px] shrink-0">{values.length}</Badge>
                     ) : (
-                      <span className="text-[10px] text-[#3d5a4a]/30 shrink-0">vacio</span>
+                      <span className="text-[10px] text-[#3d5a4a] shrink-0">vacio</span>
                     )}
                   </div>
 
@@ -279,87 +303,83 @@ export function HardcodedTab({ result, dsCoverage, dsTokens }: HardcodedTabProps
 
   return (
     <div className="space-y-6">
-      {/* ── Colors ── */}
-      <Card className="p-6">
-        <h3 className="text-sm font-semibold mb-1 flex items-center gap-2 text-[#1a2e23]">
-          Colores Hardcodeados
-          <Badge variant="secondary">{result.colors.length}</Badge>
-        </h3>
-        <p className="text-xs text-[#3d5a4a] mb-3">
-          {hasDsData
-            ? 'Cada color muestra la variable HG5 que deberia usarse en su lugar.'
-            : 'Colores escritos directamente en el CSS sin usar variables ni tokens del DS. Carga tokens del DS para ver sugerencias.'}
-        </p>
-        {sortedColors.length === 0 ? (
-          <p className="text-sm text-[#3d5a4a]">No se encontraron colores hardcodeados.</p>
-        ) : (
-          <div className="flex flex-wrap gap-2">
-            {sortedColors.map((color, i) => {
-              const dsInfo = colorDsMap.get(color.normalized)
-              return (
-                <div
-                  key={i}
-                  className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 border ${
-                    dsInfo?.isExact
-                      ? 'bg-[#e0f5ec]/30 border-[#006c48]/15'
-                      : 'bg-[#f8f9fa] border-transparent'
-                  }`}
-                >
-                  {/* Current color swatch */}
+      {/* ── Row 1: Colors + Font Sizes ── */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <Card className="p-6">
+          <h3 className="text-sm font-semibold mb-1 flex items-center gap-2 text-[#1a2e23]">
+            Colores Hardcodeados
+            <Badge variant="secondary">{result.colors.length}</Badge>
+          </h3>
+          <p className="text-xs text-[#3d5a4a] mb-3">
+            {hasDsData
+              ? 'Cada color muestra la variable HG5 que deberia usarse en su lugar.'
+              : 'Colores escritos directamente en el CSS sin usar variables ni tokens del DS. Carga tokens del DS para ver sugerencias.'}
+          </p>
+          {sortedColors.length === 0 ? (
+            <p className="text-sm text-[#3d5a4a]">No se encontraron colores hardcodeados.</p>
+          ) : (
+            <ExpandableChips items={sortedColors} renderChip={(color, i) => {
+                const dsInfo = colorDsMap.get(color.normalized)
+                return (
                   <div
-                    className="w-5 h-5 rounded border border-black/10 shrink-0"
-                    style={{ backgroundColor: color.normalized }}
-                  />
-                  <span className="text-xs font-mono text-[#1a2e23]">{color.value}</span>
-                  <Badge variant="secondary" className="text-[10px] px-1.5 py-0">{color.count}x</Badge>
+                    key={i}
+                    className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 border ${
+                      dsInfo?.isExact
+                        ? 'bg-[#e0f5ec]/30 border-[#006c48]/15'
+                        : 'bg-[#f8f9fa] border-transparent'
+                    }`}
+                  >
+                    <div
+                      className="w-5 h-5 rounded border border-black/10 shrink-0"
+                      style={{ backgroundColor: color.normalized }}
+                    />
+                    <span className="text-xs font-mono text-[#1a2e23]">{color.value}</span>
+                    <Badge variant="secondary" className="text-[10px] px-1.5 py-0">{color.count}x</Badge>
+                    {dsInfo && (
+                      <>
+                        <ArrowRight size={10} className="text-[#3d5a4a]/40 shrink-0" />
+                        <div
+                          className="w-4 h-4 rounded border border-black/10 shrink-0"
+                          style={{ backgroundColor: dsInfo.closestValue }}
+                        />
+                        {dsInfo.varName ? (
+                          <code className={`text-[10px] font-mono ${dsInfo.isExact ? 'text-[#006c48]' : 'text-[#a67c00]'}`}>
+                            {dsInfo.varName}
+                          </code>
+                        ) : (
+                          <span className={`text-[10px] font-mono ${dsInfo.isExact ? 'text-[#006c48]' : 'text-[#a67c00]'}`}>
+                            {dsInfo.closestValue}
+                          </span>
+                        )}
+                        {dsInfo.isExact && (
+                          <CheckCircle size={10} className="text-[#006c48] shrink-0" />
+                        )}
+                      </>
+                    )}
+                  </div>
+                )
+              }} />
+          )}
+        </Card>
 
-                  {/* DS suggestion */}
-                  {dsInfo && (
-                    <>
-                      <ArrowRight size={10} className="text-[#3d5a4a]/40 shrink-0" />
-                      <div
-                        className="w-4 h-4 rounded border border-black/10 shrink-0"
-                        style={{ backgroundColor: dsInfo.closestValue }}
-                      />
-                      {dsInfo.varName ? (
-                        <code className={`text-[10px] font-mono ${dsInfo.isExact ? 'text-[#006c48]' : 'text-[#a67c00]'}`}>
-                          {dsInfo.varName}
-                        </code>
-                      ) : (
-                        <span className={`text-[10px] font-mono ${dsInfo.isExact ? 'text-[#006c48]' : 'text-[#a67c00]'}`}>
-                          {dsInfo.closestValue}
-                        </span>
-                      )}
-                      {dsInfo.isExact && (
-                        <CheckCircle size={10} className="text-[#006c48] shrink-0" />
-                      )}
-                    </>
-                  )}
-                </div>
-              )
-            })}
-          </div>
-        )}
-      </Card>
+        <Card className="p-6">
+          <h3 className="text-sm font-semibold mb-1 flex items-center gap-2 text-[#1a2e23]">
+            Font Sizes Hardcodeados
+            <Badge variant="secondary">{result.fontSizes.length}</Badge>
+          </h3>
+          <p className="text-xs text-[#3d5a4a] mb-3">Tamanos de fuente hardcodeados fuera del sistema de tokens.</p>
+          {sortedFontSizes.length === 0 ? (
+            <p className="text-sm text-[#3d5a4a]">No se encontraron font-sizes hardcodeados.</p>
+          ) : (
+            <ExpandableChips items={sortedFontSizes} renderChip={(fs, i) => (
+                <ValueChip key={i} item={fs} />
+              )} />
+          )}
+        </Card>
+      </div>
 
-      {/* ── Font Sizes ── */}
-      <Card className="p-6">
-        <h3 className="text-sm font-semibold mb-1 flex items-center gap-2 text-[#1a2e23]">
-          Font Sizes Hardcodeados
-          <Badge variant="secondary">{result.fontSizes.length}</Badge>
-        </h3>
-        <p className="text-xs text-[#3d5a4a] mb-3">Tamanos de fuente hardcodeados fuera del sistema de tokens.</p>
-        {sortedFontSizes.length === 0 ? (
-          <p className="text-sm text-[#3d5a4a]">No se encontraron font-sizes hardcodeados.</p>
-        ) : (
-          <div className="flex flex-wrap gap-2">
-            {sortedFontSizes.map((fs, i) => (
-              <ValueChip key={i} item={fs} />
-            ))}
-          </div>
-        )}
-      </Card>
-
+      {/* ── Row 2: Spacing + Z-index ── */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
       {/* ── Spacing ── */}
       {(() => {
         // Classify spacing by unit type
@@ -416,15 +436,13 @@ export function HardcodedTab({ result, dsCoverage, dsTokens }: HardcodedTabProps
                             No multiplos de 8 ({pxBad.length})
                           </span>
                         </div>
-                        <div className="flex flex-wrap gap-1.5">
-                          {pxBad.map((sv, i) => (
+                        <ExpandableChips items={pxBad} renderChip={(sv, i) => (
                             <div key={i} className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 bg-[#fef2f1] border border-[#9e2b25]/15">
                               <AlertTriangle size={10} className="text-[#9e2b25]" />
                               <span className="text-xs font-mono font-semibold text-[#9e2b25]">{sv.value}</span>
                               <Badge variant="secondary" className="text-[10px] px-1.5 py-0">{sv.count}x</Badge>
                             </div>
-                          ))}
-                        </div>
+                          )} />
                       </div>
                     )}
 
@@ -437,14 +455,12 @@ export function HardcodedTab({ result, dsCoverage, dsTokens }: HardcodedTabProps
                             Multiplos de 8 ({pxOk.length})
                           </span>
                         </div>
-                        <div className="flex flex-wrap gap-1.5">
-                          {pxOk.map((sv, i) => (
+                        <ExpandableChips items={pxOk} renderChip={(sv, i) => (
                             <div key={i} className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1 bg-[#e0f5ec]/30 border border-[#006c48]/10">
                               <span className="text-[11px] font-mono text-[#006c48]">{sv.value}</span>
                               <span className="text-[10px] text-[#3d5a4a]">{sv.count}x</span>
                             </div>
-                          ))}
-                        </div>
+                          )} />
                       </div>
                     )}
 
@@ -465,14 +481,12 @@ export function HardcodedTab({ result, dsCoverage, dsTokens }: HardcodedTabProps
                       <Badge variant="secondary" className="text-[10px]">{percentValues.length}</Badge>
                       <div className="flex-1 h-px bg-[#f0f2f1]" />
                     </div>
-                    <div className="flex flex-wrap gap-1.5">
-                      {percentValues.map((sv, i) => (
+                    <ExpandableChips items={percentValues} renderChip={(sv, i) => (
                         <div key={i} className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 bg-[#f0f4ff] border border-[#4a7cba]/10">
                           <span className="text-xs font-mono font-semibold text-[#2c5282]">{sv.value}</span>
                           <Badge variant="secondary" className="text-[10px] px-1.5 py-0">{sv.count}x</Badge>
                         </div>
-                      ))}
-                    </div>
+                      )} />
                   </div>
                 )}
 
@@ -484,14 +498,12 @@ export function HardcodedTab({ result, dsCoverage, dsTokens }: HardcodedTabProps
                       <Badge variant="secondary" className="text-[10px]">{otherValues.length}</Badge>
                       <div className="flex-1 h-px bg-[#f0f2f1]" />
                     </div>
-                    <div className="flex flex-wrap gap-1.5">
-                      {otherValues.map((sv, i) => (
+                    <ExpandableChips items={otherValues} renderChip={(sv, i) => (
                         <div key={i} className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 bg-[#f8f9fa] border border-[#f0f2f1]">
                           <span className="text-xs font-mono font-semibold text-[#1a2e23]">{sv.value}</span>
                           <Badge variant="secondary" className="text-[10px] px-1.5 py-0">{sv.count}x</Badge>
                         </div>
-                      ))}
-                    </div>
+                      )} />
                   </div>
                 )}
               </div>
@@ -500,8 +512,9 @@ export function HardcodedTab({ result, dsCoverage, dsTokens }: HardcodedTabProps
         )
       })()}
 
-      {/* ── Z-index — full width, grouped by depth ── */}
+      {/* ── Z-index ── */}
       <ZIndexSection items={sortedZIndex} total={result.zIndexValues.length} />
+      </div>
 
       {/* ── !important ── */}
       <Card className="p-6">

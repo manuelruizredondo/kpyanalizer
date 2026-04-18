@@ -46,6 +46,16 @@ export function AppLayout({ children }: AppLayoutProps) {
               >
                 Dashboard
               </Link>
+              <Link
+                to="/action-plan"
+                className={`text-sm font-medium transition-colors ${
+                  isActive('/action-plan')
+                    ? 'text-[#006c48]'
+                    : 'text-[#3d5a4a] hover:text-[#1a2e23]'
+                }`}
+              >
+                Plan de Acción
+              </Link>
             </nav>
 
             <div className="flex items-center gap-3">

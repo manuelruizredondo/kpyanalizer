@@ -310,6 +310,8 @@ export function SpecificityTab({ result }: SpecificityTabProps) {
         </CardContent>
       </Card>
 
+      {/* ── Row: Weight Distribution + Type Distribution ── */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
       {/* Specificity Weight Chart (original bar chart, now the secondary view) */}
       <Card>
         <CardHeader>
@@ -373,6 +375,7 @@ export function SpecificityTab({ result }: SpecificityTabProps) {
           </ResponsiveContainer>
         </CardContent>
       </Card>
+      </div>
 
       {/* Top 20 Highest Specificity Selectors Table */}
       <Card>

@@ -4,6 +4,7 @@ import { useAuth } from '@/contexts/AuthContext'
 import { LoginPage } from '@/components/auth/LoginPage'
 import { AppLayout } from '@/components/layout/AppLayout'
 import { DashboardPage } from '@/components/dashboard/DashboardPage'
+import { ActionPlanPage } from '@/components/actionplan/ActionPlanPage'
 import { saveScan, getProjects } from '@/lib/scan-storage'
 import type { Project } from '@/lib/scan-storage'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -379,6 +380,14 @@ export default function App() {
         element={
           <AppLayout>
             <DashboardPage />
+          </AppLayout>
+        }
+      />
+      <Route
+        path="/action-plan"
+        element={
+          <AppLayout>
+            <ActionPlanPage />
           </AppLayout>
         }
       />

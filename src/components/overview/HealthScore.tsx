@@ -30,7 +30,7 @@ export function HealthScore({ score }: HealthScoreProps) {
         <svg className="w-32 h-32 -rotate-90" viewBox="0 0 100 100">
           <circle
             cx="50" cy="50" r="45"
-            fill="none"
+            fill="white"
             stroke="currentColor"
             strokeWidth="8"
             className="text-muted/30"

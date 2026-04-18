@@ -1013,7 +1013,7 @@ export function DashboardPage() {
                       </Card>
                     </div>
 
-                    {/* ── Font Weight Consolidation Table ── */}
+                    {/* ── Font Weight — Two Column Layout ── */}
                     {weights.length > 0 && (() => {
                       const groups = new Map<string, { normalized: string; variants: { value: string; count: number }[]; totalCount: number }>()
                       for (const w of weights) {
@@ -1028,96 +1028,230 @@ export function DashboardPage() {
                         if (!isNaN(na) && !isNaN(nb)) return na - nb
                         return a.normalized.localeCompare(b.normalized)
                       })
-                      const actionsCount = allGroups.filter(g => DS_WEIGHT_TARGET[g.normalized] != null).length
-                        + allGroups.filter(g => g.variants.length > 1).length
+                      const actionGroups = allGroups.filter(g => {
+                        const dsTarget = DS_WEIGHT_TARGET[g.normalized]
+                        return (dsTarget !== undefined && dsTarget !== null) || g.variants.length > 1
+                      })
+                      const okGroups = allGroups.filter(g => {
+                        const dsTarget = DS_WEIGHT_TARGET[g.normalized]
+                        return !(dsTarget !== undefined && dsTarget !== null) && g.variants.length <= 1
+                      })
 
                       return (
-                        <Card className="p-6">
-                          <div className="flex items-center gap-2 mb-1">
-                            <Bold size={20} className="text-[#006c48]" />
-                            <h3 className="text-lg font-semibold text-[#1a2e23]">Traslado de Grosores</h3>
-                            <InfoTooltip text="Pesos aprobados del DS: 100, 400, 600 y 700. El resto se consolida al peso aprobado mas cercano." />
-                          </div>
-                          {actionsCount > 0 && (
-                            <p className="text-xs text-[#9e2b25] mb-3">
-                              {actionsCount} accion{actionsCount !== 1 ? 'es' : ''} pendiente{actionsCount !== 1 ? 's' : ''}
-                            </p>
-                          )}
-                          <div className="overflow-hidden rounded-lg border border-[#f0f2f1]">
-                            <table className="w-full text-sm" style={{ tableLayout: 'fixed' }}>
-                              <colgroup>
-                                <col style={{ width: '55px' }} />
-                                <col style={{ width: '80px' }} />
-                                <col style={{ width: '120px' }} />
-                                <col style={{ width: '50px' }} />
-                                <col />
-                              </colgroup>
-                              <thead>
-                                <tr className="bg-[#f8f9fa]">
-                                  <th className="text-center py-2 px-2 text-[11px] font-semibold text-[#1a2e23]">Peso</th>
-                                  <th className="text-left py-2 px-2 text-[11px] font-semibold text-[#1a2e23]">Nombre</th>
-                                  <th className="text-left py-2 px-2 text-[11px] font-semibold text-[#1a2e23]">Valores</th>
-                                  <th className="text-center py-2 px-2 text-[11px] font-semibold text-[#1a2e23]">Usos</th>
-                                  <th className="text-left py-2 px-2 text-[11px] font-semibold text-[#1a2e23]">Accion DS</th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {allGroups.map((g) => {
-                                  const hasDupes = g.variants.length > 1
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                          {/* LEFT: All Font Weights & Equivalences */}
+                          <Card className="p-6">
+                            <div className="flex items-center gap-2 mb-4">
+                              <Bold size={20} className="text-[#006c48]" />
+                              <h3 className="text-lg font-semibold text-[#1a2e23]">Font-Weights y Equivalencias</h3>
+                              <InfoTooltip text="Todos los pesos tipograficos encontrados, con sus variantes textuales (bold, normal, etc.) y el valor numerico equivalente." />
+                            </div>
+                            <div className="space-y-2">
+                              {allGroups.map((g) => {
+                                const dsTarget = DS_WEIGHT_TARGET[g.normalized]
+                                const needsConsolidation = dsTarget !== undefined && dsTarget !== null
+                                const approved = [100, 400, 600, 700].includes(parseInt(g.normalized, 10))
+                                return (
+                                  <div key={g.normalized} className={`flex items-center gap-3 p-2.5 rounded-lg border ${
+                                    needsConsolidation ? 'border-[#9e2b25]/20 bg-[#fef2f1]/30' :
+                                    approved ? 'border-[#006c48]/20 bg-[#e0f5ec]/30' :
+                                    'border-[#f0f2f1] bg-white'
+                                  }`}>
+                                    {/* Weight badge */}
+                                    <div
+                                      className={`w-10 text-center rounded py-1 text-xs font-bold text-white shrink-0 ${needsConsolidation ? 'line-through opacity-60' : ''}`}
+                                      style={{ backgroundColor: getWeightBarColor(g.normalized) }}
+                                    >
+                                      {g.normalized}
+                                    </div>
+                                    {/* Name + variants */}
+                                    <div className="flex-1 min-w-0">
+                                      <p className={`text-xs font-medium ${needsConsolidation ? 'text-[#9e2b25] line-through' : 'text-[#1a2e23]'}`}>
+                                        {getWeightLabel(g.normalized)}
+                                      </p>
+                                      <div className="flex flex-wrap gap-1 mt-1">
+                                        {g.variants.map((v, i) => (
+                                          <span key={i} className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-mono ${
+                                            needsConsolidation ? 'bg-[#fef2f1] text-[#9e2b25]' :
+                                            g.variants.length > 1 ? 'bg-[#fef6e0] text-[#a67c00]' :
+                                            'bg-[#f0f2f1] text-[#3d5a4a]'
+                                          }`}>
+                                            {v.value}
+                                            <span className="text-[8px] opacity-60">{v.count}x</span>
+                                          </span>
+                                        ))}
+                                      </div>
+                                    </div>
+                                    {/* Total count */}
+                                    <div className="text-right shrink-0">
+                                      <p className="text-sm font-bold text-[#1a2e23] tabular-nums">{g.totalCount}</p>
+                                      <p className="text-[9px] text-[#3d5a4a]">usos</p>
+                                    </div>
+                                  </div>
+                                )
+                              })}
+                            </div>
+                          </Card>
+
+                          {/* RIGHT: Actions */}
+                          <Card className="p-6">
+                            <div className="flex items-center gap-2 mb-4">
+                              <Bold size={20} className="text-[#9e2b25]" />
+                              <h3 className="text-lg font-semibold text-[#1a2e23]">Acciones de Font-Weight</h3>
+                              <InfoTooltip text="Pesos aprobados del DS: 100, 400, 600 y 700. Los demas se consolidan al peso aprobado mas cercano. Variantes duplicadas se unifican." />
+                            </div>
+
+                            {actionGroups.length > 0 ? (
+                              <div className="space-y-3">
+                                <p className="text-xs text-[#9e2b25] font-medium">
+                                  {actionGroups.length} accion{actionGroups.length !== 1 ? 'es' : ''} pendiente{actionGroups.length !== 1 ? 's' : ''}
+                                </p>
+                                {actionGroups.map((g) => {
                                   const dsTarget = DS_WEIGHT_TARGET[g.normalized]
                                   const needsConsolidation = dsTarget !== undefined && dsTarget !== null
+                                  const hasDupes = g.variants.length > 1
                                   return (
-                                    <tr key={g.normalized} className={`border-t border-[#f0f2f1] ${needsConsolidation ? 'bg-[#fef2f1]/30' : hasDupes ? 'bg-[#fef6e0]/30' : ''}`}>
-                                      <td className="py-1.5 px-2 text-center">
+                                    <div key={g.normalized} className={`p-3 rounded-lg border ${
+                                      needsConsolidation ? 'border-[#9e2b25]/20 bg-[#fef2f1]/40' : 'border-[#a67c00]/20 bg-[#fef6e0]/40'
+                                    }`}>
+                                      <div className="flex items-center gap-2 mb-2">
                                         <div
-                                          className={`inline-block w-7 text-center rounded px-1 py-0.5 text-[9px] font-semibold text-white ${needsConsolidation ? 'line-through opacity-60' : ''}`}
+                                          className="w-8 text-center rounded py-0.5 text-[10px] font-bold text-white line-through opacity-60"
                                           style={{ backgroundColor: getWeightBarColor(g.normalized) }}
                                         >
                                           {g.normalized}
                                         </div>
-                                      </td>
-                                      <td className={`py-1.5 px-2 text-[10px] ${needsConsolidation ? 'text-[#9e2b25] line-through' : 'text-[#3d5a4a]'}`}>
-                                        {getWeightLabel(g.normalized)}
-                                      </td>
-                                      <td className="py-1.5 px-2">
-                                        <div className="flex flex-wrap gap-1">
-                                          {g.variants.map((v, i) => (
-                                            <span key={i} className={`inline-flex items-center gap-0.5 px-1 py-0.5 rounded text-[9px] font-mono ${
-                                              needsConsolidation ? 'bg-[#fef2f1] text-[#9e2b25]' : hasDupes ? 'bg-[#fef6e0] text-[#a67c00]' : 'bg-[#f0f2f1] text-[#1a2e23]'
-                                            }`}>
-                                              {v.value}
-                                              <span className="text-[8px] opacity-60">{v.count}x</span>
-                                            </span>
-                                          ))}
+                                        <span className="text-xs font-medium text-[#1a2e23] line-through">{getWeightLabel(g.normalized)}</span>
+                                        <span className="text-[10px] text-[#3d5a4a]">({g.totalCount} usos)</span>
+                                      </div>
+                                      {needsConsolidation && (
+                                        <div className="flex items-center gap-2 ml-10">
+                                          <Badge className="bg-[#fef2f1] text-[#9e2b25] text-[10px] px-2 py-0.5 shrink-0">Consolidar</Badge>
+                                          <span className="text-xs text-[#9e2b25]">→</span>
+                                          <div
+                                            className="w-8 text-center rounded py-0.5 text-[10px] font-bold text-white"
+                                            style={{ backgroundColor: getWeightBarColor(dsTarget!) }}
+                                          >
+                                            {dsTarget}
+                                          </div>
+                                          <span className="text-xs font-medium text-[#006c48]">{getWeightLabel(dsTarget!)}</span>
                                         </div>
-                                      </td>
-                                      <td className="py-1.5 px-2 text-center text-[10px] font-semibold text-[#1a2e23] tabular-nums">{g.totalCount}</td>
-                                      <td className="py-1.5 px-2">
-                                        {needsConsolidation ? (
-                                          <div className="flex items-center gap-1">
-                                            <Badge className="bg-[#fef2f1] text-[#9e2b25] text-[8px] px-1.5 py-0 shrink-0">Consolidar</Badge>
-                                            <span className="text-[9px] text-[#9e2b25]">
-                                              → {dsTarget} ({getWeightLabel(dsTarget!)})
-                                            </span>
-                                          </div>
-                                        ) : hasDupes ? (
-                                          <div className="flex items-center gap-1">
-                                            <Badge className="bg-[#fef6e0] text-[#a67c00] text-[8px] px-1.5 py-0 shrink-0">Unificar</Badge>
-                                            <span className="text-[9px] text-[#a67c00]">→ usar {g.normalized}</span>
-                                          </div>
-                                        ) : (
-                                          <Badge className="bg-[#e0f5ec] text-[#006c48] text-[8px] px-1.5 py-0">OK</Badge>
-                                        )}
-                                      </td>
-                                    </tr>
+                                      )}
+                                      {!needsConsolidation && hasDupes && (
+                                        <div className="flex items-center gap-2 ml-10">
+                                          <Badge className="bg-[#fef6e0] text-[#a67c00] text-[10px] px-2 py-0.5 shrink-0">Unificar</Badge>
+                                          <span className="text-xs text-[#a67c00]">
+                                            {g.variants.map(v => v.value).join(', ')} → usar <span className="font-mono font-bold">{g.normalized}</span>
+                                          </span>
+                                        </div>
+                                      )}
+                                    </div>
                                   )
                                 })}
-                              </tbody>
-                            </table>
-                          </div>
-                        </Card>
+                              </div>
+                            ) : (
+                              <div className="flex items-center gap-2 p-4 bg-[#e0f5ec] rounded-lg">
+                                <CheckCircle size={18} className="text-[#006c48]" />
+                                <p className="text-sm text-[#006c48] font-medium">Todos los pesos son correctos</p>
+                              </div>
+                            )}
+
+                            {/* OK weights summary */}
+                            {okGroups.length > 0 && (
+                              <div className="mt-4 pt-4 border-t border-[#f0f2f1]">
+                                <p className="text-[10px] text-[#3d5a4a] font-semibold uppercase tracking-wider mb-2">Pesos correctos</p>
+                                <div className="flex flex-wrap gap-2">
+                                  {okGroups.map(g => (
+                                    <div key={g.normalized} className="flex items-center gap-1.5 bg-[#e0f5ec]/50 border border-[#006c48]/10 rounded-lg px-2.5 py-1.5">
+                                      <div
+                                        className="w-7 text-center rounded py-0.5 text-[9px] font-bold text-white"
+                                        style={{ backgroundColor: getWeightBarColor(g.normalized) }}
+                                      >
+                                        {g.normalized}
+                                      </div>
+                                      <span className="text-[10px] text-[#006c48] font-medium">{getWeightLabel(g.normalized)}</span>
+                                      <span className="text-[9px] text-[#3d5a4a]">{g.totalCount}x</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                          </Card>
+                        </div>
                       )
                     })()}
+
+                    {/* ── Font Families Chart ── */}
+                    {families.length > 0 && (
+                      <Card className="p-6">
+                        <div className="flex items-center gap-2 mb-1">
+                          <Type size={20} className="text-[#006c48]" />
+                          <h3 className="text-lg font-semibold text-[#1a2e23]">Familias Tipograficas</h3>
+                          <InfoTooltip text="Distribucion de todas las font-family del CSS. Verde = Suisse (DS), amarillo = genericas, rojo = a eliminar." />
+                        </div>
+                        <p className="text-xs text-[#3d5a4a] mb-4">
+                          {dsCount} usos Suisse · {genericCount} genericas · {eliminateCount} a eliminar
+                        </p>
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                          {/* Bar chart */}
+                          <ResponsiveContainer width="100%" height={Math.max(180, families.length * 32)}>
+                            <BarChart
+                              data={[...families].sort((a, b) => b.count - a.count).map(f => ({
+                                name: (f.normalized || f.value).replace(/['"]/g, '').slice(0, 20),
+                                full: (f.normalized || f.value).replace(/['"]/g, ''),
+                                value: f.count,
+                                classification: classifyFamily(f.normalized || f.value),
+                              }))}
+                              layout="vertical"
+                              margin={{ left: 10, right: 20, top: 5, bottom: 5 }}
+                            >
+                              <CartesianGrid strokeDasharray="3 3" stroke="#f0f2f1" />
+                              <XAxis type="number" tick={{ fontSize: 10, fill: '#3d5a4a' }} />
+                              <YAxis dataKey="name" type="category" tick={{ fontSize: 10, fill: '#3d5a4a' }} width={130} />
+                              <Tooltip
+                                contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.08)', fontSize: '12px' }}
+                                formatter={(val: number, _: string, props: { payload?: { full?: string; classification?: string } }) => {
+                                  const cls = props.payload?.classification === 'ds' ? 'Suisse (DS)' : props.payload?.classification === 'generic' ? 'Generica' : 'A eliminar'
+                                  return [`${val} usos — ${cls}`, props.payload?.full || '']
+                                }}
+                              />
+                              <Bar dataKey="value" radius={[0, 4, 4, 0]} name="Usos">
+                                {[...families].sort((a, b) => b.count - a.count).map((f, i) => {
+                                  const cls = classifyFamily(f.normalized || f.value)
+                                  return <Cell key={i} fill={cls === 'ds' ? '#006c48' : cls === 'generic' ? '#a67c00' : '#9e2b25'} />
+                                })}
+                              </Bar>
+                            </BarChart>
+                          </ResponsiveContainer>
+
+                          {/* Legend + details */}
+                          <div className="space-y-3">
+                            <div className="flex items-center gap-4 text-[10px]">
+                              <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-[#006c48]" /> Suisse (DS)</span>
+                              <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-[#a67c00]" /> Genericas</span>
+                              <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-[#9e2b25]" /> A eliminar</span>
+                            </div>
+                            {eliminateList.length > 0 && (
+                              <div className="space-y-1.5">
+                                <p className="text-xs font-semibold text-[#9e2b25]">Reemplazar por Suisse:</p>
+                                {eliminateList.sort((a, b) => b.count - a.count).map((f, i) => (
+                                  <div key={i} className="flex items-center justify-between bg-[#fef2f1] rounded-lg px-3 py-1.5">
+                                    <span className="text-xs font-mono text-[#9e2b25]">{(f.normalized || f.value).replace(/['"]/g, '')}</span>
+                                    <Badge className="bg-[#fef2f1] text-[#9e2b25] text-[10px] px-1.5 py-0">{f.count} usos</Badge>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                            {eliminateList.length === 0 && (
+                              <div className="flex items-center gap-2 p-3 bg-[#e0f5ec] rounded-lg">
+                                <CheckCircle size={16} className="text-[#006c48]" />
+                                <p className="text-xs text-[#006c48] font-medium">Todas las familias son correctas</p>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </Card>
+                    )}
 
                     {/* ── Hardcoded Values Summary ── */}
                     {ad && (
