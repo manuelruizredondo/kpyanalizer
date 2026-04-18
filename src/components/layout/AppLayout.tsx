@@ -8,10 +8,18 @@ interface AppLayoutProps {
 }
 
 export function AppLayout({ children }: AppLayoutProps) {
-  const { profile, signOut } = useAuth()
+  const { user, profile, signOut } = useAuth()
   const location = useLocation()
 
   const isActive = (path: string) => location.pathname === path
+
+  // Build display name with robust fallbacks (empty strings are falsy with .trim())
+  const displayName =
+    (profile?.full_name?.trim()) ||
+    (profile?.email?.trim()) ||
+    (user?.email?.trim()) ||
+    (user?.user_metadata?.full_name?.trim?.()) ||
+    'Usuario'
 
   return (
     <div className="min-h-screen bg-[#f8f9fa]">
@@ -60,7 +68,7 @@ export function AppLayout({ children }: AppLayoutProps) {
 
             <div className="flex items-center gap-3">
               <p className="text-sm font-medium text-[#1a2e23]">
-                {profile?.full_name || profile?.email || 'Usuario'}
+                {displayName}
               </p>
               <Badge className="bg-[#e0f5ec] text-[#012d1d]">
                 {profile?.role === 'super_admin' ? 'Admin' : 'Editor'}

@@ -286,6 +286,17 @@ export function DashboardPage() {
   const [showAllMismatches, setShowAllMismatches] = useState(false)
   const hg5FetchedRef = useRef(false)
 
+  // ── Safety timeout: never stay on "Cargando" forever ──
+  useEffect(() => {
+    const t = setTimeout(() => {
+      if (loading) {
+        console.warn('[Dashboard] Safety timeout reached – forcing loading=false')
+        setLoading(false)
+      }
+    }, 8000)
+    return () => clearTimeout(t)
+  }, [loading])
+
   // ── Load projects ──
   useEffect(() => {
     loadProjects()
