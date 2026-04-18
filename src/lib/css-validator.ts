@@ -90,7 +90,8 @@ export function validateCssLocal(css: string): W3cValidationResult {
   // ── Phase 2: Lexer validation (property + value checking) ──
   const lexer = csstree.lexer
   let currentSelector = ""
-  let _charsetFound = false
+  let charsetFound = false
+  void charsetFound // used below as write-only flag
   let firstRuleSeen = false
   let insideFontFace = false
 
@@ -135,7 +136,7 @@ export function validateCssLocal(css: string): W3cValidationResult {
               type: "charset-position",
             })
           }
-          _charsetFound = true
+          charsetFound = true
           firstRuleSeen = true
         }
       }

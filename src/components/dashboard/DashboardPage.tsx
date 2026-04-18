@@ -885,7 +885,7 @@ export function DashboardPage() {
                                           <Cell key={i} fill={d.color} />
                                         ))}
                                       </Pie>
-                                      <Tooltip formatter={(v: number, name: string) => [`${v} usos`, name]} />
+                                      <Tooltip formatter={(v: any, name: any) => [`${v} usos`, name]} />
                                     </PieChart>
                                   </ResponsiveContainer>
                                 </div>
@@ -1221,9 +1221,9 @@ export function DashboardPage() {
                               <YAxis dataKey="name" type="category" tick={{ fontSize: 10, fill: '#3d5a4a' }} width={130} />
                               <Tooltip
                                 contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.08)', fontSize: '12px' }}
-                                formatter={(val: number, _: string, props: { payload?: { full?: string; classification?: string } }) => {
-                                  const cls = props.payload?.classification === 'ds' ? 'Suisse (DS)' : props.payload?.classification === 'generic' ? 'Generica' : 'A eliminar'
-                                  return [`${val} usos — ${cls}`, props.payload?.full || '']
+                                formatter={(val: any, _: any, props: any) => {
+                                  const cls = props?.payload?.classification === 'ds' ? 'Suisse (DS)' : props?.payload?.classification === 'generic' ? 'Generica' : 'A eliminar'
+                                  return [`${val} usos — ${cls}`, props?.payload?.full || '']
                                 }}
                               />
                               <Bar dataKey="value" radius={[0, 4, 4, 0]} name="Usos">
@@ -1366,7 +1366,7 @@ export function DashboardPage() {
                             parsed.filter(z => z.num >= 0 && z.num < 10000).map(z => Math.floor(z.num / 1000) * 1000)
                           )
                           const outOfRange = parsed.filter(z => z.num >= 10000)
-                          const usedDepths = new Set(parsed.filter(z => z.num >= 0).map(z => Math.floor(z.num / 1000) * 1000))
+
 
                           return (
                             <Card className="p-6">

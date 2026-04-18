@@ -1,14 +1,14 @@
 import { useMemo } from 'react'
 import { Link } from 'react-router-dom'
-import type { AnalysisResult, HardcodedValue } from '@/types/analysis'
+import type { AnalysisResult } from '@/types/analysis'
 import { useAnalysis } from '@/hooks/useAnalysis'
-import { useW3cValidation } from '@/hooks/useW3cValidation'
+// import { useW3cValidation } from '@/hooks/useW3cValidation'
 import { Card } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import {
   AlertTriangle, CheckCircle, XCircle, ArrowRight, Clock,
-  Palette, Type, Bold, Layers, Zap, Copy, ShieldCheck,
-  Code, Target, TrendingDown, Info,
+  Palette, Type, Bold, Layers, Zap, Copy,
+  Code, Target, TrendingDown,
 } from 'lucide-react'
 
 // ─── Priority Levels ─────────────────────────────────────────────
@@ -42,18 +42,6 @@ const GENERIC_FAMILIES = new Set([
 ])
 const DS_APPROVED_WEIGHTS = [100, 400, 600, 700]
 
-// ─── Info Tooltip ────────────────────────────────────────────────
-function InfoTooltip({ text }: { text: string }) {
-  return (
-    <span className="relative group inline-flex">
-      <Info size={12} className="text-[#3d5a4a]/40 hover:text-[#006c48] cursor-help transition-colors" />
-      <span className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 rounded-lg bg-[#1a2e23] text-white text-[10px] leading-relaxed px-2.5 py-1.5 opacity-0 group-hover:opacity-100 transition-opacity z-50 shadow-lg">
-        {text}
-        <span className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-[#1a2e23]" />
-      </span>
-    </span>
-  )
-}
 
 // ─── Generate Action Items ───────────────────────────────────────
 function generateActions(result: AnalysisResult): ActionItem[] {
@@ -289,7 +277,7 @@ function generateActions(result: AnalysisResult): ActionItem[] {
 }
 
 // ─── Summary Stats ───────────────────────────────────────────────
-function ActionSummary({ actions, result }: { actions: ActionItem[]; result: AnalysisResult }) {
+function ActionSummary({ actions }: { actions: ActionItem[] }) {
   const counts = useMemo(() => {
     const c = { critical: 0, high: 0, medium: 0, low: 0 }
     for (const a of actions) c[a.priority]++
@@ -320,7 +308,6 @@ function ActionSummary({ actions, result }: { actions: ActionItem[]; result: Ana
 // ─── Main Component ──────────────────────────────────────────────
 export function ActionPlanPage() {
   const { result } = useAnalysis()
-  const w3c = useW3cValidation()
 
   const actions = useMemo(() => {
     if (!result) return []
@@ -378,7 +365,7 @@ export function ActionPlanPage() {
       </div>
 
       {/* Summary Cards */}
-      <ActionSummary actions={actions} result={result} />
+      <ActionSummary actions={actions} />
 
       {/* Action Items by Priority */}
       {(['critical', 'high', 'medium', 'low'] as Priority[]).map(priority => {
