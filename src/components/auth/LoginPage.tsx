@@ -36,7 +36,7 @@ export const LoginPage: React.FC = () => {
           {/* Header */}
           <div className="flex items-center justify-center mb-8">
             <Code className="w-8 h-8 text-[#006c48] mr-3" />
-            <h1 className="text-2xl font-bold text-[#1a2e23] font-['Plus_Jakarta_Sans']">KPY CSS Analyzer</h1>
+            <h1 className="text-2xl font-bold text-[#1a2e23]">KPY CSS Analyzer</h1>
           </div>
 
           {/* Form */}

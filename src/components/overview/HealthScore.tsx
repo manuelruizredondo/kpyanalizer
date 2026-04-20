@@ -5,10 +5,10 @@ interface HealthScoreProps {
 }
 
 function getScoreColor(score: number) {
-  if (score >= 80) return { text: "text-green-600", stroke: "#16a34a", bg: "bg-green-50" }
-  if (score >= 60) return { text: "text-yellow-600", stroke: "#ca8a04", bg: "bg-yellow-50" }
-  if (score >= 40) return { text: "text-orange-600", stroke: "#ea580c", bg: "bg-orange-50" }
-  return { text: "text-red-600", stroke: "#dc2626", bg: "bg-red-50" }
+  if (score >= 80) return { text: "text-[#006c48]", stroke: "#006c48", bg: "bg-white" }
+  if (score >= 60) return { text: "text-[#a67c00]", stroke: "#a67c00", bg: "bg-white" }
+  if (score >= 40) return { text: "text-[#a67c00]", stroke: "#a67c00", bg: "bg-white" }
+  return { text: "text-[#9e2b25]", stroke: "#9e2b25", bg: "bg-white" }
 }
 
 function getScoreLabel(score: number) {

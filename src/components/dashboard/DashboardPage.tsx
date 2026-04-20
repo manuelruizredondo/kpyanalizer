@@ -1,27 +1,21 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { useAuth } from '@/contexts/AuthContext'
 import { supabase } from '@/lib/supabase'
-import {
-  createProject,
-  deleteScan,
-  deleteProject,
-} from '@/lib/scan-storage'
-import type { Project, Scan, ScanDetail } from '@/lib/scan-storage'
+import type { AnalysisResult } from '@/types/analysis'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { ScanDetailModal } from './ScanDetailModal'
-import { parseDsTokens } from '@/lib/ds-token-parser'
-import { compareDsTokens } from '@/lib/ds-comparator'
-import type { DsTokenSet, DsCoverageResult as FullDsCoverage } from '@/types/design-system'
-import type { AnalysisResult } from '@/types/analysis'
+import { ConfrontarTab } from './ConfrontarTab'
+import { InfoTooltip } from '@/components/ui/InfoTooltip'
+import { ScoreRing } from '@/components/ui/ScoreRing'
+import { classifyFamily } from '@/lib/font-utils'
+import type { Project, Scan, ScanDetail, ActionItem, ActionPriority } from '@/lib/scan-storage'
+import { getActionItems, createActionItem, updateActionItem, deleteActionItem, reorderActionItems, deleteScan } from '@/lib/scan-storage'
+import { analyzeCss } from '@/lib/analyzer'
 import {
   LineChart,
   Line,
-  AreaChart,
-  Area,
-  BarChart,
-  Bar,
   PieChart,
   Pie,
   Cell,
@@ -31,10 +25,13 @@ import {
   Tooltip,
   ResponsiveContainer,
   Legend,
+  BarChart,
+  Bar,
+  ReferenceLine,
+  AreaChart,
+  Area,
 } from 'recharts'
 import {
-  Trash2,
-  Eye,
   FileText,
   Ruler,
   Hash,
@@ -49,71 +46,20 @@ import {
   Palette,
   Type,
   Loader2,
-  RefreshCw,
-  Info,
   XCircle,
-  Bold,
   CheckCircle,
+  Plus,
+  GripVertical,
+  Pencil,
+  Trash2,
+  X,
+  ChevronUp,
+  ChevronDown,
+  Eye,
+  Zap,
   Grid3X3,
-  Box,
 } from 'lucide-react'
 
-const HG5_URL = 'https://hg5.netlify.app/output.css'
-
-// ─── Weight helpers (same as TypographyTab) ────────────────────
-function getWeightLabel(normalized: string): string {
-  const map: Record<string, string> = {
-    "100": "Thin", "200": "Extra Light", "300": "Light",
-    "400": "Normal", "500": "Medium", "600": "Semi Bold",
-    "700": "Bold", "800": "Extra Bold", "900": "Black",
-  }
-  return map[normalized] || normalized
-}
-function getWeightBarColor(normalized: string): string {
-  const n = parseInt(normalized, 10)
-  if (isNaN(n)) return '#3d5a4a'
-  if (n <= 300) return '#5cc49a'
-  if (n <= 500) return '#2a9d6e'
-  if (n <= 700) return '#006c48'
-  return '#1a2e23'
-}
-const DS_WEIGHT_TARGET: Record<string, string | null> = {
-  "100": null, "200": "100", "300": "100",
-  "400": null, "500": "400", "600": null,
-  "700": null, "800": "700", "900": "700",
-}
-
-// ─── Font classification (same logic as TypographyTab) ──────────
-const DS_FONT_KEYWORD = 'suisse'
-const GENERIC_FAMILIES = new Set([
-  'serif', 'sans-serif', 'monospace', 'cursive', 'fantasy', 'system-ui',
-  'ui-serif', 'ui-sans-serif', 'ui-monospace', 'ui-rounded', 'math',
-  'emoji', 'fangsong', 'inherit', 'initial', 'unset', 'revert',
-  'arial', 'helvetica', 'times new roman', 'times', 'courier new',
-  'courier', 'georgia', 'verdana', 'tahoma', 'trebuchet ms',
-  'palatino linotype', 'palatino', 'impact', 'lucida console',
-  'lucida sans unicode', 'lucida grande', 'segoe ui', 'roboto',
-])
-function classifyFamily(normalized: string): 'ds' | 'generic' | 'eliminate' {
-  const lower = normalized.toLowerCase().replace(/['"]/g, '').trim()
-  if (lower.includes(DS_FONT_KEYWORD)) return 'ds'
-  if (GENERIC_FAMILIES.has(lower)) return 'generic'
-  return 'eliminate'
-}
-const CORS_PROXY = 'https://lqgdrkwabcjrnnthlrmi.supabase.co/functions/v1/cors-proxy'
-
-// ─── Info Tooltip ──────────────────────────────────────────────────
-function InfoTooltip({ text }: { text: string }) {
-  return (
-    <span className="relative group inline-flex">
-      <Info size={13} className="text-[#3d5a4a]/50 hover:text-[#006c48] cursor-help transition-colors" />
-      <span className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 rounded-lg bg-[#1a2e23] text-white text-xs leading-relaxed px-3 py-2 opacity-0 group-hover:opacity-100 transition-opacity z-50 shadow-lg">
-        {text}
-        <span className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-[#1a2e23]" />
-      </span>
-    </span>
-  )
-}
 
 // ─── Section Header ────────────────────────────────────────────────
 function SectionHeader({ title, tooltip, children }: { title: string; tooltip?: string; children?: React.ReactNode }) {
@@ -181,39 +127,6 @@ function MetricCard({
   )
 }
 
-// ─── Score Ring ─────────────────────────────────────────────────────
-function ScoreRing({ score, size = 120 }: { score: number; size?: number }) {
-  const radius = (size - 12) / 2
-  const circumference = 2 * Math.PI * radius
-  const progress = (score / 100) * circumference
-  const color = score >= 70 ? '#006c48' : score >= 40 ? '#a67c00' : '#9e2b25'
-
-  return (
-    <div className="relative" style={{ width: size, height: size }}>
-      <svg width={size} height={size} className="-rotate-90">
-        <circle cx={size / 2} cy={size / 2} r={radius} fill="none" stroke="#f0f2f1" strokeWidth={10} />
-        <circle
-          cx={size / 2}
-          cy={size / 2}
-          r={radius}
-          fill="none"
-          stroke={color}
-          strokeWidth={10}
-          strokeDasharray={circumference}
-          strokeDashoffset={circumference - progress}
-          strokeLinecap="round"
-        />
-      </svg>
-      <div className="absolute inset-0 flex flex-col items-center justify-center">
-        <span className="text-3xl font-bold" style={{ color }}>
-          {score}
-        </span>
-        <span className="text-xs text-[#3d5a4a]">/ 100</span>
-      </div>
-    </div>
-  )
-}
-
 // ─── Coverage Bar ──────────────────────────────────────────────────
 function CoverageBar({ label, value, color }: { label: string; value: number; color: string }) {
   return (
@@ -233,7 +146,6 @@ function CoverageBar({ label, value, color }: { label: string; value: number; co
 }
 
 // ─── Chart Title with Delta ────────────────────────────────────────
-// downIsGood = true → green if value went down, red if up (for errors, legacy counts)
 function ChartTitle({ title, tooltip, first, last, downIsGood = true }: {
   title: string; tooltip: string; first?: number; last?: number; downIsGood?: boolean
 }) {
@@ -264,27 +176,34 @@ function ChartTitle({ title, tooltip, first, last, downIsGood = true }: {
 
 // ─── Main Component ─────────────────────────────────────────────────
 export function DashboardPage() {
-  const { profile } = useAuth()
+  const { signOut } = useAuth()
   const [projects, setProjects] = useState<Project[]>([])
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
   const [scans, setScans] = useState<Scan[]>([])
   const [latestDetail, setLatestDetail] = useState<ScanDetail | null>(null)
-  const [allDetails, setAllDetails] = useState<Map<string, ScanDetail>>(new Map())
   const [loading, setLoading] = useState(true)
   const [scansLoading, setScansLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [showNewProjectForm, setShowNewProjectForm] = useState(false)
-  const [newProjectName, setNewProjectName] = useState('')
-  const [newProjectDescription, setNewProjectDescription] = useState('')
   const [selectedScanId, setSelectedScanId] = useState<string | null>(null)
+  const [activeTab, setActiveTab] = useState('resumen')
+  const [allScanDetails, setAllScanDetails] = useState<Map<string, ScanDetail>>(new Map())
 
-  // ── HG5 live comparison state ──
-  const [hg5Tokens, setHg5Tokens] = useState<DsTokenSet | null>(null)
-  const [hg5Coverage, setHg5Coverage] = useState<FullDsCoverage | null>(null)
+  // ── Action items state ──
+  const [actionItems, setActionItems] = useState<ActionItem[]>([])
+  const [actionLoading, setActionLoading] = useState(false)
+  const [showAddForm, setShowAddForm] = useState(false)
+  const [expandedAutoItems, setExpandedAutoItems] = useState<Set<number>>(new Set())
+  const [planScanId, setPlanScanId] = useState<string | null>(null)
+  const [editingItemId, setEditingItemId] = useState<string | null>(null)
+  const [formTitle, setFormTitle] = useState('')
+  const [formDescription, setFormDescription] = useState('')
+  const [formPriority, setFormPriority] = useState<ActionPriority>('medium')
+
+  // ── HG5 Confrontar state ──
+  const hg5FetchedRef = useRef(false)
+  const [hg5Result, setHg5Result] = useState<AnalysisResult | null>(null)
   const [hg5Loading, setHg5Loading] = useState(false)
   const [hg5Error, setHg5Error] = useState<string | null>(null)
-  const [showAllMismatches, setShowAllMismatches] = useState(false)
-  const hg5FetchedRef = useRef(false)
 
   // ── Safety timeout: never stay on "Cargando" forever ──
   useEffect(() => {
@@ -307,8 +226,6 @@ export function DashboardPage() {
       setLoading(true)
       setError(null)
 
-      // Use getSession (local, no network) instead of getUser (network call that hangs)
-      console.log('[Dashboard] Checking local session...')
       const { data: { session } } = await supabase.auth.getSession()
       if (!session) {
         setError('No hay sesión activa. Inicia sesión para continuar.')
@@ -317,7 +234,6 @@ export function DashboardPage() {
       }
       console.log('[Dashboard] Session found for:', session.user.email)
 
-      // Fetch projects via direct REST call (bypasses SDK issues)
       console.log('[Dashboard] Fetching projects via REST...')
       const controller = new AbortController()
       const timeout = setTimeout(() => controller.abort(), 10000)
@@ -398,7 +314,6 @@ export function DashboardPage() {
       setScans(scansList)
 
       if (scansList.length > 0) {
-        // Get ALL scan details for historical charts
         const scanIds = scansList.map(s => s.id)
         try {
           const details = await restFetch(
@@ -416,19 +331,17 @@ export function DashboardPage() {
               } as ScanDetail)
             }
           }
-          setAllDetails(detailMap)
+          setAllScanDetails(detailMap)
 
-          // Set latest detail
           const latestD = detailMap.get(scansList[0].id)
           setLatestDetail(latestD || null)
         } catch (detailErr) {
           console.warn('[Dashboard] Could not load scan details:', detailErr)
           setLatestDetail(null)
-          setAllDetails(new Map())
+          // No details to map
         }
       } else {
         setLatestDetail(null)
-        setAllDetails(new Map())
       }
     } catch (err) {
       console.error('[Dashboard] Error loading scans:', err)
@@ -439,79 +352,121 @@ export function DashboardPage() {
     }
   }
 
-  // ── Fetch HG5 tokens and compare against latest analysis ──
-  const fetchHg5Comparison = async (analysisData: AnalysisResult) => {
+  // ── Fetch HG5 CSS when confrontar tab is selected ──
+  const loadHg5 = async () => {
+    if (hg5FetchedRef.current || hg5Loading) return
     setHg5Loading(true)
     setHg5Error(null)
     try {
-      const proxyUrl = `${CORS_PROXY}?url=${encodeURIComponent(HG5_URL)}`
-      const resp = await fetch(proxyUrl)
-      if (!resp.ok) throw new Error(`Error ${resp.status}`)
-      const css = await resp.text()
-      const tokens = parseDsTokens(css, 'output.css')
-      setHg5Tokens(tokens)
-      const coverage = compareDsTokens(
-        analysisData.colors,
-        analysisData.fontSizes,
-        analysisData.spacingValues,
-        analysisData.zIndexValues,
-        tokens
-      )
-      setHg5Coverage(coverage)
-    } catch (e) {
-      setHg5Error(e instanceof Error ? e.message : 'Error al cargar HolyGrail5')
+      // Use Vite proxy in dev to avoid CORS, fallback to direct URL in production
+      const base = import.meta.env.DEV ? '/api/hg5' : 'https://hg5.netlify.app'
+      const [outputResp, duttiResp] = await Promise.all([
+        fetch(`${base}/output.css`),
+        fetch(`${base}/themes/dutti.css`),
+      ])
+      if (!outputResp.ok) throw new Error(`output.css: ${outputResp.status}`)
+      if (!duttiResp.ok) throw new Error(`dutti.css: ${duttiResp.status}`)
+      const [outputCss, duttiCss] = await Promise.all([outputResp.text(), duttiResp.text()])
+      const combined = `/* === output.css === */\n${outputCss}\n\n/* === dutti.css === */\n${duttiCss}`
+      const result = analyzeCss(combined)
+      setHg5Result(result)
+      hg5FetchedRef.current = true
+    } catch (err) {
+      console.error('[HG5] Error fetching:', err)
+      setHg5Error(err instanceof Error ? err.message : 'Error al cargar el CSS de HG5')
     } finally {
       setHg5Loading(false)
     }
   }
 
-  // ── Auto-fetch HG5 when latest detail is available ──
   useEffect(() => {
-    if (latestDetail?.analysis_data && !hg5FetchedRef.current) {
-      hg5FetchedRef.current = true
-      fetchHg5Comparison(latestDetail.analysis_data)
+    if ((activeTab === 'confrontar' || activeTab === 'resumen') && !hg5FetchedRef.current) {
+      loadHg5()
     }
-  }, [latestDetail])
+  }, [activeTab])
 
-  // ── Handlers ──
-  const handleCreateProject = async () => {
-    if (!newProjectName.trim()) return
+  // ── Load action items when project changes or plan tab shown ──
+  useEffect(() => {
+    if (selectedProjectId && activeTab === 'plan') {
+      loadActionItems(selectedProjectId)
+    }
+  }, [selectedProjectId, activeTab])
+
+  const loadActionItems = async (projectId: string) => {
     try {
-      const newProjectId = await createProject(newProjectName, newProjectDescription || undefined)
-      await loadProjects()
-      setSelectedProjectId(newProjectId)
-      setNewProjectName('')
-      setNewProjectDescription('')
-      setShowNewProjectForm(false)
-    } catch (error) {
-      console.error('Error creating project:', error)
+      setActionLoading(true)
+      const items = await getActionItems(projectId)
+      setActionItems(items)
+    } catch (err) {
+      console.error('[Dashboard] Error loading action items:', err)
+    } finally {
+      setActionLoading(false)
     }
   }
 
-  const handleDeleteScan = async (scanId: string) => {
-    if (!window.confirm('¿Deseas eliminar este escaneo?')) return
+  const resetForm = () => {
+    setFormTitle('')
+    setFormDescription('')
+    setFormPriority('medium')
+    setShowAddForm(false)
+    setEditingItemId(null)
+  }
+
+  const handleAddItem = async () => {
+    if (!formTitle.trim() || !selectedProjectId) return
     try {
-      await deleteScan(scanId)
-      if (selectedProjectId) await loadScans(selectedProjectId)
-    } catch (error) {
-      console.error('Error deleting scan:', error)
+      await createActionItem(selectedProjectId, formTitle.trim(), formPriority, formDescription.trim())
+      resetForm()
+      await loadActionItems(selectedProjectId)
+    } catch (err) {
+      console.error('Error creating action item:', err)
     }
   }
 
-  const handleDeleteProject = async (projectId: string) => {
-    if (!window.confirm('¿Deseas eliminar este proyecto y todos sus escaneos?')) return
+  const handleUpdateItem = async () => {
+    if (!editingItemId || !formTitle.trim()) return
     try {
-      await deleteProject(projectId)
-      const updated = projects.filter((p) => p.id !== projectId)
-      setProjects(updated)
-      if (selectedProjectId === projectId) {
-        setSelectedProjectId(updated.length > 0 ? updated[0].id : null)
-        setScans([])
-        setLatestDetail(null)
-      }
-    } catch (error) {
-      console.error('Error deleting project:', error)
+      await updateActionItem(editingItemId, {
+        title: formTitle.trim(),
+        description: formDescription.trim(),
+        priority: formPriority,
+      })
+      resetForm()
+      if (selectedProjectId) await loadActionItems(selectedProjectId)
+    } catch (err) {
+      console.error('Error updating action item:', err)
     }
+  }
+
+  const handleDeleteItem = async (id: string) => {
+    try {
+      await deleteActionItem(id)
+      if (selectedProjectId) await loadActionItems(selectedProjectId)
+    } catch (err) {
+      console.error('Error deleting action item:', err)
+    }
+  }
+
+  const handleMoveItem = async (index: number, direction: 'up' | 'down') => {
+    const newItems = [...actionItems]
+    const swapIdx = direction === 'up' ? index - 1 : index + 1
+    if (swapIdx < 0 || swapIdx >= newItems.length) return
+    ;[newItems[index], newItems[swapIdx]] = [newItems[swapIdx], newItems[index]]
+    setActionItems(newItems)
+    try {
+      await reorderActionItems(newItems.map(i => i.id))
+    } catch (err) {
+      console.error('Error reordering:', err)
+      if (selectedProjectId) await loadActionItems(selectedProjectId)
+    }
+  }
+
+  const startEdit = (item: ActionItem) => {
+    setEditingItemId(item.id)
+    setFormTitle(item.title)
+    setFormDescription(item.description)
+    setFormPriority(item.priority)
+    setShowAddForm(true)
   }
 
   // ── Derived data ──
@@ -519,12 +474,6 @@ export function DashboardPage() {
   const latestScan = scans.length > 0 ? scans[0] : null
   const previousScan = scans.length > 1 ? scans[1] : null
   const chronologicalScans = [...scans].reverse()
-
-  const getHealthScoreBadgeColor = (score: number) => {
-    if (score >= 70) return 'bg-[#e0f5ec] text-[#006c48]'
-    if (score >= 40) return 'bg-[#fef6e0] text-[#a67c00]'
-    return 'bg-[#fef2f1] text-[#9e2b25]'
-  }
 
   const getDelta = (current: number, previous: number | undefined) => {
     if (previous === undefined) return null
@@ -547,15 +496,15 @@ export function DashboardPage() {
 
   const selectorsChartData = chronologicalScans.map((s) => ({
     date: new Date(s.created_at).toLocaleDateString('es-ES', { day: '2-digit', month: 'short' }),
-    selectores: s.total_selectors,
     declaraciones: s.total_declarations,
+    selectores: s.total_selectors,
     unicas: s.unique_declarations,
   }))
 
-  const issuesChartData = chronologicalScans.map((s) => ({
+  const importantChartData = chronologicalScans.map((s) => ({
     date: new Date(s.created_at).toLocaleDateString('es-ES', { day: '2-digit', month: 'short' }),
-    '!important': s.important_count,
-    IDs: s.id_count,
+    important: s.important_count,
+    ids: s.id_count,
   }))
 
   const reuseChartData = chronologicalScans.map((s) => ({
@@ -563,74 +512,85 @@ export function DashboardPage() {
     ratio: +(s.reuse_ratio * 100).toFixed(1),
   }))
 
-  // ── Legacy reduction chart data (from scan details) ──
-  const legacyChartData = useMemo(() => {
-    if (chronologicalScans.length === 0) return []
+  // Legacy reduction charts (need analysis_data from all scans)
+  const hardcodedColorsChartData = useMemo(() => chronologicalScans.map((s) => {
+    const detail = allScanDetails.get(s.id)
+    const ad = detail?.analysis_data as AnalysisResult | undefined
+    return {
+      date: new Date(s.created_at).toLocaleDateString('es-ES', { day: '2-digit', month: 'short' }),
+      colores: ad?.colors?.length || 0,
+    }
+  }), [chronologicalScans, allScanDetails])
+
+  const fontsToEliminateChartData = useMemo(() => chronologicalScans.map((s) => {
+    const detail = allScanDetails.get(s.id)
+    const ad = detail?.analysis_data as AnalysisResult | undefined
+    const badFonts = (ad?.fontFamilies || []).filter(f => classifyFamily(f.normalized || f.value) === 'eliminate')
+    return {
+      date: new Date(s.created_at).toLocaleDateString('es-ES', { day: '2-digit', month: 'short' }),
+      fuentes: badFonts.reduce((sum, f) => sum + f.count, 0),
+    }
+  }), [chronologicalScans, allScanDetails])
+
+  // ── HG5 Compliance evolution data ──
+  const hg5EvolutionData = useMemo(() => {
+    if (!hg5Result) return null
+    const hg5 = hg5Result
+
     return chronologicalScans.map((s) => {
-      const detail = allDetails.get(s.id)
+      const detail = allScanDetails.get(s.id)
       const ad = detail?.analysis_data as AnalysisResult | undefined
+      const date = new Date(s.created_at).toLocaleDateString('es-ES', { day: '2-digit', month: 'short' })
 
-      // Colors hardcoded
-      const colorsCount = ad?.colors?.length || 0
+      if (!ad) return { date, score: 0, coloresUser: 0, importantUser: 0, idsUser: 0, badFonts: 0, spacingUser: 0, reuseUser: 0 }
 
-      // Font families to eliminate
-      const families = ad?.fontFamilies || []
-      const eliminateFamilies = families.filter(f => classifyFamily(f.normalized || f.value) === 'eliminate').length
+      const badFonts = (ad.fontFamilies || []).filter(f => classifyFamily(f.normalized || f.value) === 'eliminate')
 
-      // Font weights needing consolidation
-      const weights = ad?.fontWeights || []
-      const weightGroups = new Map<string, boolean>()
-      for (const w of weights) {
-        const target = DS_WEIGHT_TARGET[w.normalized]
-        if (target !== undefined && target !== null) weightGroups.set(w.normalized, true)
+      // Compute a simple compliance score per scan
+      let good = 0
+      let total = 0
+      const check = (userVal: number, hg5Val: number, lowerBetter: boolean) => {
+        total++
+        const diff = userVal - hg5Val
+        const pctDiff = hg5Val !== 0 ? Math.abs(diff / hg5Val) * 100 : (diff === 0 ? 0 : 100)
+        if (lowerBetter ? diff <= 0 : diff >= 0) good++
+        else if (pctDiff <= 5) good++
       }
-      const weightActions = weightGroups.size
+      check(ad.importantCount, hg5.importantCount, true)
+      check(ad.idCount, hg5.idCount, true)
+      check(ad.colors.length, hg5.colors.length, true)
+      check(ad.duplicateSelectors.length, hg5.duplicateSelectors.length, true)
+      check(ad.duplicateDeclarations.length, hg5.duplicateDeclarations.length, true)
+      check(ad.vendorPrefixCount, hg5.vendorPrefixCount, true)
+      check(ad.reuseRatio, hg5.reuseRatio, false)
+      check(ad.variableCount, hg5.variableCount, false)
+      check(badFonts.length, 0, true)
+      check(ad.spacingValues.length, hg5.spacingValues.length, true)
 
-      // Spacing: px not multiple of 8
-      const spacing = ad?.spacingValues || []
-      const spacingBadPx = spacing.filter(sv => {
-        const n = parseFloat(sv.normalized)
-        const isPx = /px$/i.test(sv.normalized) || sv.normalized === '0' || /^\d+$/.test(sv.normalized)
-        if (!isPx || isNaN(n)) return false
-        return n !== 0 && n % 8 !== 0
-      }).length
-
-      // Z-index irregulars
-      const zValues = ad?.zIndexValues || []
-      const zIrregulars = zValues.filter(z => {
-        const n = parseInt(z.value, 10)
-        return !isNaN(n) && n !== 0 && n % 1000 !== 0
-      }).length
-
-      // Validation errors
-      const w3cErrors = detail?.w3c_validation?.errorCount || 0
+      const compliance = total > 0 ? Math.round((good / total) * 100) : 0
 
       return {
-        date: new Date(s.created_at).toLocaleDateString('es-ES', { day: '2-digit', month: 'short' }),
-        colorsCount,
-        eliminateFamilies,
-        weightActions,
-        spacingBadPx,
-        zIrregulars,
-        w3cErrors,
+        date,
+        cumplimiento: compliance,
+        coloresUser: ad.colors.length,
+        importantUser: ad.importantCount,
+        idsUser: ad.idCount,
+        badFonts: badFonts.length,
+        spacingUser: ad.spacingValues.length,
+        reuseUser: +(ad.reuseRatio * 100).toFixed(1),
+        scoreUser: ad.healthScore,
       }
     })
-  }, [chronologicalScans, allDetails])
+  }, [chronologicalScans, allScanDetails, hg5Result])
 
-  const compositionChartData = latestScan
-    ? [
-        { name: 'Clases', value: latestScan.class_count, fill: '#006c48' },
-        { name: 'IDs', value: latestScan.id_count, fill: '#a67c00' },
-        { name: '!important', value: latestScan.important_count, fill: '#9e2b25' },
-        { name: 'Variables', value: latestScan.variable_count, fill: '#2a9d6e' },
-      ]
-    : []
+
+
 
   // ── Loading / Error states ──
   if (loading && projects.length === 0) {
     return (
       <div className="flex items-center justify-center py-24">
-        <p className="text-gray-500">Cargando...</p>
+        <p className="text-[#52695b]">Cargando...</p>
       </div>
     )
   }
@@ -639,16 +599,13 @@ export function DashboardPage() {
     return (
       <div className="flex flex-col items-center justify-center py-24 gap-4">
         <AlertTriangle size={32} className="text-[#9e2b25]" />
-        <p className="text-red-600 text-center max-w-md">{error}</p>
+        <p className="text-[#9e2b25] text-center max-w-md">{error}</p>
         <div className="flex gap-3">
           <Button onClick={loadProjects} variant="outline" size="sm">
             Reintentar
           </Button>
           <Button
-            onClick={async () => {
-              await supabase.auth.signOut()
-              window.location.reload()
-            }}
+            onClick={() => signOut()}
             variant="outline"
             size="sm"
             className="text-[#9e2b25] border-[#9e2b25]"
@@ -660,92 +617,76 @@ export function DashboardPage() {
     )
   }
 
+  const TABS = [
+    { id: 'resumen', label: 'Resumen' },
+    { id: 'confrontar', label: 'Confrontar HG5' },
+    { id: 'plan', label: 'Plan de Acción' },
+  ]
+
   // ── Render ──
   return (
-    <div className="flex min-h-[calc(100vh-73px)] w-full">
-      {/* ─── Sidebar ─── */}
-      <div className="w-64 shrink-0 bg-white rounded-2xl m-[10px] p-6 shadow-sm self-start sticky top-[10px]">
-        <div className="mb-6">
-          <h2 className="text-lg font-semibold text-[#1a2e23] mb-4">Proyectos</h2>
-
-          {!showNewProjectForm ? (
-            <Button onClick={() => setShowNewProjectForm(true)} className="w-full" size="sm">
-              Nuevo proyecto
-            </Button>
-          ) : (
-            <div className="space-y-3 p-3 bg-[#f8f9fa] rounded-xl">
-              <input
-                type="text"
-                placeholder="Nombre del proyecto"
-                value={newProjectName}
-                onChange={(e) => setNewProjectName(e.target.value)}
-                className="w-full px-3 py-2 bg-white rounded-lg border-0 text-sm focus:outline-none focus:ring-2 focus:ring-[#006c48]"
-              />
-              <textarea
-                placeholder="Descripción (opcional)"
-                value={newProjectDescription}
-                onChange={(e) => setNewProjectDescription(e.target.value)}
-                className="w-full px-3 py-2 bg-white rounded-lg border-0 text-sm focus:outline-none focus:ring-2 focus:ring-[#006c48] resize-none"
-                rows={2}
-              />
-              <div className="flex gap-2">
-                <Button onClick={handleCreateProject} size="sm" className="flex-1">
-                  Crear
-                </Button>
-                <Button
-                  onClick={() => {
-                    setShowNewProjectForm(false)
-                    setNewProjectName('')
-                    setNewProjectDescription('')
-                  }}
-                  size="sm"
-                  variant="outline"
-                  className="flex-1"
-                >
-                  Cancelar
-                </Button>
-              </div>
-            </div>
-          )}
-        </div>
-
-        <div className="space-y-1">
-          {projects.map((project) => (
-            <div
-              key={project.id}
-              onClick={() => setSelectedProjectId(project.id)}
-              className={`group relative flex items-center gap-2 px-3 py-2.5 rounded-lg cursor-pointer transition-colors ${
-                selectedProjectId === project.id ? 'bg-[#e0f5ec]' : 'hover:bg-[#f8f9fa]'
-              }`}
+    <div className="flex flex-col w-full">
+      {/* ═══════════════════════════════════════════════════════════════════
+          DASHBOARD SUB-HEADER (Row 2: project, tabs, scan selector)
+          Sticky below the main EditorialHeader
+          ═══════════════════════════════════════════════════════════════════ */}
+      <div
+        className="sticky top-[57px] z-20 backdrop-blur-xl border-b"
+        style={{ background: 'rgba(246, 247, 245, 0.92)', borderColor: 'rgba(11, 31, 22, 0.08)' }}
+      >
+        <div className="px-8 flex items-center gap-6">
+          {/* Project selector */}
+          <div className="flex items-center gap-3 py-2.5">
+            <span className="text-[11px] uppercase tracking-[0.08em]" style={{ color: '#52695b', fontWeight: 500 }}>Proyecto</span>
+            <select
+              value={selectedProjectId || ''}
+              onChange={(e) => setSelectedProjectId(e.target.value)}
+              className="appearance-none bg-transparent text-[13px] font-medium text-[#0b1f16] cursor-pointer focus:outline-none pr-6"
+              style={{
+                backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='%23006c48' d='M1 1l5 5 5-5'/%3E%3C/svg%3E")`,
+                backgroundRepeat: 'no-repeat',
+                backgroundPosition: 'right center',
+              }}
             >
-              <div className="min-w-0 flex-1">
-                <h3 className="font-medium text-[#1a2e23] text-sm truncate">{project.name}</h3>
-                {project.description && (
-                  <p className="text-xs text-[#3d5a4a] mt-0.5 truncate">{project.description}</p>
-                )}
-              </div>
-              {profile?.role === 'super_admin' && (
-                <button
-                  onClick={(e) => { e.stopPropagation(); handleDeleteProject(project.id) }}
-                  className="shrink-0 p-1 rounded text-[#9e2b25]/0 group-hover:text-[#9e2b25] hover:!text-[#7a1e1a] hover:bg-[#fef2f1] transition-all"
-                  title="Eliminar proyecto"
-                >
-                  <Trash2 size={14} />
-                </button>
-              )}
-            </div>
-          ))}
-        </div>
-
-        {projects.length === 0 && !loading && (
-          <div className="text-center py-8">
-            <p className="text-sm text-[#3d5a4a]">No hay proyectos aun</p>
+              {projects.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
           </div>
-        )}
+
+          {/* Vertical separator */}
+          <div style={{ width: '1px', height: '24px', background: 'rgba(11, 31, 22, 0.08)' }} />
+
+          {/* Tab buttons */}
+          <div className="flex gap-1">
+            {TABS.map((tab) => (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                className="relative px-3 py-3 text-[12px] font-medium transition-colors"
+                style={{ color: activeTab === tab.id ? '#0b1f16' : '#52695b' }}
+              >
+                {tab.label}
+                {activeTab === tab.id && (
+                  <span className="absolute bottom-0 left-0 right-0 h-0.5" style={{ background: '#006c48' }} />
+                )}
+              </button>
+            ))}
+          </div>
+
+          {/* Scan count badge (pushed right) */}
+          <div className="ml-auto flex items-center gap-2 pl-4" style={{ borderLeft: '1px solid rgba(11, 31, 22, 0.08)' }}>
+            <span className="text-[11px] text-[#52695b]">{scans.length} escaneo{scans.length !== 1 ? 's' : ''}</span>
+          </div>
+        </div>
       </div>
 
-      {/* ─── Main Content ─── */}
-      <div className="flex-1 min-w-0 p-8 space-y-8">
+      {/* ═══════════════════════════════════════════════════════════════════
+          MAIN CONTENT
+          ═══════════════════════════════════════════════════════════════════ */}
+      <div className="flex-1 px-8 py-8 max-w-[1440px] mx-auto w-full">
         {scansLoading ? (
           <div className="flex items-center justify-center py-24 gap-3">
             <Loader2 className="animate-spin text-[#006c48]" size={24} />
@@ -753,1309 +694,1294 @@ export function DashboardPage() {
           </div>
         ) : selectedProject ? (
           scans.length > 0 && latestScan ? (
-            <>
-              {/* ── Header ── */}
-              <div className="flex items-end justify-between">
-                <div>
-                  <h1 className="text-3xl font-bold text-[#1a2e23]">{selectedProject.name}</h1>
-                  <p className="text-[#3d5a4a] mt-1">
-                    {scans.length} escaneo{scans.length !== 1 ? 's' : ''} · Ultima actualizacion:{' '}
-                    {new Date(latestScan.created_at).toLocaleDateString('es-ES', {
-                      day: 'numeric',
-                      month: 'long',
-                      year: 'numeric',
-                    })}
-                  </p>
-                </div>
-                <Badge className={`text-base px-4 py-1 ${getHealthScoreBadgeColor(latestScan.health_score)}`}>
-                  Health Score: {latestScan.health_score}
-                </Badge>
-              </div>
-
-              {/* ══════════════════════════════════════════════════════════════
-                   HERO — CSS Health Score Line Chart
-                 ══════════════════════════════════════════════════════════════ */}
-              <Card className="p-6">
-                <div className="flex items-center justify-between mb-2">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <h2 className="text-lg font-semibold text-[#1a2e23]">CSS Health Score</h2>
-                      <InfoTooltip text="Puntuacion de 0 a 100 que mide la calidad general de tu CSS. Considera duplicados, !important, IDs, especificidad, prefijos vendor y eficiencia shorthand." />
-                    </div>
-                    <p className="text-sm text-[#3d5a4a]">Evolucion de la calidad del CSS a lo largo de los escaneos</p>
-                  </div>
-                  <div className="flex items-center gap-3">
-                    <ScoreRing score={latestScan.health_score} size={80} />
-                  </div>
-                </div>
-                <ResponsiveContainer width="100%" height={280}>
-                  <LineChart data={healthScoreChartData}>
-                    <defs>
-                      <linearGradient id="healthLine" x1="0" y1="0" x2="1" y2="0">
-                        <stop offset="0%" stopColor="#9e2b25" />
-                        <stop offset="50%" stopColor="#a67c00" />
-                        <stop offset="100%" stopColor="#006c48" />
-                      </linearGradient>
-                    </defs>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#f0f2f1" />
-                    <XAxis dataKey="date" tick={{ fontSize: 12 }} tickLine={false} axisLine={false} />
-                    <YAxis domain={[0, 100]} tick={{ fontSize: 12 }} tickLine={false} axisLine={false} />
-                    <Tooltip
-                      contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 4px 20px rgba(0,0,0,0.08)' }}
-                      formatter={(value) => [`${value} / 100`, 'Health Score']}
-                    />
-                    <Line
-                      type="monotone"
-                      dataKey="score"
-                      stroke="#006c48"
-                      strokeWidth={3}
-                      dot={{ fill: '#006c48', strokeWidth: 2, r: 5 }}
-                      activeDot={{ r: 7, fill: '#006c48', stroke: '#fff', strokeWidth: 2 }}
-                      name="Health Score"
-                    />
-                  </LineChart>
-                </ResponsiveContainer>
-              </Card>
-
-              {/* ══════════════════════════════════════════════════════════════
-                   SECTION 1 — Metrics Cards
-                 ══════════════════════════════════════════════════════════════ */}
-              <div>
-                <SectionHeader title="Metricas del ultimo escaneo" tooltip="Resumen de los KPIs clave del ultimo analisis CSS. Las flechas muestran la diferencia con el escaneo anterior." />
-                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
-                  <MetricCard icon={FileText} label="Peso" value={(latestScan.file_size / 1024).toFixed(1)} unit="KB" delta={previousScan ? +((latestScan.file_size - previousScan.file_size) / 1024).toFixed(1) : null} invertDelta tooltip="Tamano del archivo CSS en kilobytes. Un CSS mas ligero mejora el rendimiento de carga de la pagina." />
-                  <MetricCard icon={Ruler} label="Lineas" value={latestScan.line_count.toLocaleString()} color="#2a9d6e" delta={getDelta(latestScan.line_count, previousScan?.line_count)} invertDelta tooltip="Total de lineas de codigo en el archivo CSS. Menos lineas = CSS mas facil de mantener." />
-                  <MetricCard icon={Hash} label="Clases" value={latestScan.class_count.toLocaleString()} color="#006c48" delta={getDelta(latestScan.class_count, previousScan?.class_count)} tooltip="Selectores de clase (.nombre) usados. Las clases son la forma recomendada de aplicar estilos." />
-                  <MetricCard icon={AtSign} label="IDs" value={latestScan.id_count.toLocaleString()} color="#a67c00" delta={getDelta(latestScan.id_count, previousScan?.id_count)} invertDelta tooltip="Selectores de ID (#nombre). Tienen alta especificidad y dificultan la reutilizacion. Evitalos en CSS." />
-                  <MetricCard icon={AlertTriangle} label="!important" value={latestScan.important_count.toLocaleString()} color="#9e2b25" delta={getDelta(latestScan.important_count, previousScan?.important_count)} invertDelta tooltip="Veces que se usa !important para forzar prioridad. Indica problemas de especificidad y dificulta el mantenimiento." />
-                  <MetricCard icon={Variable} label="Variables CSS" value={latestScan.variable_count.toLocaleString()} color="#2a9d6e" delta={getDelta(latestScan.variable_count, previousScan?.variable_count)} tooltip="Custom properties (--var) definidas. Usar variables mejora la consistencia y facilita cambios globales." />
-                  <MetricCard icon={Layers} label="Selectores" value={latestScan.total_selectors.toLocaleString()} delta={getDelta(latestScan.total_selectors, previousScan?.total_selectors)} invertDelta tooltip="Total de reglas CSS definidas. Cada selector aplica estilos a uno o mas elementos del DOM." />
-                  <MetricCard icon={FileCode} label="Declaraciones" value={latestScan.total_declarations.toLocaleString()} delta={getDelta(latestScan.total_declarations, previousScan?.total_declarations)} invertDelta tooltip="Total de propiedades CSS escritas (ej. color: red). Incluye repetidas." />
-                  <MetricCard icon={Copy} label="Unicas" value={latestScan.unique_declarations.toLocaleString()} color="#5cc49a" delta={getDelta(latestScan.unique_declarations, previousScan?.unique_declarations)} invertDelta tooltip="Declaraciones no repetidas. La diferencia con el total indica cuanta duplicacion hay en tu CSS." />
-                  <MetricCard icon={Recycle} label="Ratio reutilizacion" value={(latestScan.reuse_ratio * 100).toFixed(1)} unit="%" color={latestScan.reuse_ratio >= 0.5 ? '#006c48' : '#9e2b25'} delta={previousScan ? +((latestScan.reuse_ratio - previousScan.reuse_ratio) * 100).toFixed(1) : null} tooltip="Porcentaje de declaraciones repetidas vs unicas. Un ratio alto indica CSS eficiente con buena reutilizacion de estilos." />
-                </div>
-              </div>
-
-              {/* ══════════════════════════════════════════════════════════════
-                   SECTION 2 — Typography, CSS Validation & Design System Coverage
-                 ══════════════════════════════════════════════════════════════ */}
-              {(() => {
-                const ad = latestDetail?.analysis_data as AnalysisResult | undefined
-                const families = ad?.fontFamilies || []
-                const weights = ad?.fontWeights || []
-                const sizes = ad?.fontSizes || []
-
-                // Classify families
-                const dsCount = families.filter(f => classifyFamily(f.normalized || f.value) === 'ds').reduce((s, f) => s + f.count, 0)
-                const genericCount = families.filter(f => classifyFamily(f.normalized || f.value) === 'generic').reduce((s, f) => s + f.count, 0)
-                const eliminateList = families.filter(f => classifyFamily(f.normalized || f.value) === 'eliminate')
-                const eliminateCount = eliminateList.reduce((s, f) => s + f.count, 0)
-                const totalFamilyUsages = dsCount + genericCount + eliminateCount
-                const suissePct = totalFamilyUsages > 0 ? Math.round((dsCount / totalFamilyUsages) * 100) : 0
-
-                const pieData = [
-                  { name: 'Suisse (DS)', value: dsCount, color: '#006c48' },
-                  { name: 'Genericas', value: genericCount, color: '#a67c00' },
-                  { name: 'A eliminar', value: eliminateCount, color: '#9e2b25' },
-                ].filter(d => d.value > 0)
-
-                const w3cVal = latestDetail?.w3c_validation
-
-                return (
-                  <div className="space-y-6">
-                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                      {/* Typography Card */}
-                      <Card className="p-6">
-                        <div className="flex items-center gap-2 mb-4">
-                          <Type size={20} className="text-[#006c48]" />
-                          <h3 className="text-lg font-semibold text-[#1a2e23]">Tipografia</h3>
-                          <InfoTooltip text="Resumen tipografico del CSS: familias usadas clasificadas en Design System (Suisse), genericas y a eliminar. Tambien muestra pesos y tamanos de fuente." />
+            <div className="space-y-8">
+              {/* ─── RESUMEN TAB ─── */}
+              {activeTab === 'resumen' && (
+                <div className="space-y-8">
+                  {/* Hero: CSS Health Score */}
+                  <Card className="p-6">
+                    <div className="flex items-center justify-between mb-2">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <h2 className="text-lg font-semibold text-[#1a2e23]">CSS Health Score</h2>
+                          <InfoTooltip text="Puntuacion de 0 a 100 que mide la calidad general de tu CSS. Considera duplicados, !important, IDs, especificidad, prefijos vendor y eficiencia shorthand." />
                         </div>
-
-                        {families.length > 0 ? (
-                          <div className="space-y-4">
-                            <div className="flex items-start gap-4">
-                              {/* Mini pie chart */}
-                              {pieData.length > 0 && (
-                                <div className="shrink-0">
-                                  <ResponsiveContainer width={90} height={90}>
-                                    <PieChart>
-                                      <Pie data={pieData} dataKey="value" cx="50%" cy="50%" innerRadius={24} outerRadius={42} paddingAngle={2}>
-                                        {pieData.map((d, i) => (
-                                          <Cell key={i} fill={d.color} />
-                                        ))}
-                                      </Pie>
-                                      <Tooltip formatter={(v: any, name: any) => [`${v} usos`, name]} />
-                                    </PieChart>
-                                  </ResponsiveContainer>
-                                </div>
-                              )}
-
-                              <div className="flex-1 space-y-2">
-                                {/* Suisse coverage */}
-                                <div className="flex items-center justify-between">
-                                  <span className="text-xs text-[#3d5a4a]">Cobertura Suisse</span>
-                                  <Badge className={suissePct >= 70 ? 'bg-[#e0f5ec] text-[#006c48]' : suissePct >= 40 ? 'bg-[#fef6e0] text-[#a67c00]' : 'bg-[#fef2f1] text-[#9e2b25]'}>
-                                    {suissePct}%
-                                  </Badge>
-                                </div>
-                                <div className="h-1.5 bg-[#f0f2f1] rounded-full overflow-hidden">
-                                  <div className="h-full rounded-full bg-[#006c48] transition-all" style={{ width: `${suissePct}%` }} />
-                                </div>
-
-                                {/* Quick stats */}
-                                <div className="grid grid-cols-3 gap-1.5 pt-1">
-                                  <div className="text-center p-1.5 bg-[#f8f9fa] rounded">
-                                    <p className="text-sm font-bold text-[#1a2e23]">{families.length}</p>
-                                    <p className="text-[9px] text-[#3d5a4a]">Familias</p>
-                                  </div>
-                                  <div className="text-center p-1.5 bg-[#f8f9fa] rounded">
-                                    <p className="text-sm font-bold text-[#1a2e23]">{weights.length}</p>
-                                    <p className="text-[9px] text-[#3d5a4a]">Pesos</p>
-                                  </div>
-                                  <div className="text-center p-1.5 bg-[#f8f9fa] rounded">
-                                    <p className="text-sm font-bold text-[#1a2e23]">{sizes.length}</p>
-                                    <p className="text-[9px] text-[#3d5a4a]">Tamanos</p>
-                                  </div>
-                                </div>
-                              </div>
-                            </div>
-
-                            {/* Fonts to eliminate */}
-                            {eliminateList.length > 0 && (
-                              <div className="flex items-start gap-2 p-2 bg-[#fef2f1] rounded-lg">
-                                <XCircle size={14} className="text-[#9e2b25] shrink-0 mt-0.5" />
-                                <div className="min-w-0">
-                                  <p className="text-xs font-semibold text-[#9e2b25]">{eliminateList.length} fuente{eliminateList.length !== 1 ? 's' : ''} a eliminar</p>
-                                  <p className="text-[10px] text-[#9e2b25]/70 truncate">
-                                    {eliminateList.slice(0, 3).map(f => f.value.replace(/['"]/g, '')).join(', ')}
-                                    {eliminateList.length > 3 ? ` +${eliminateList.length - 3}` : ''}
-                                  </p>
-                                </div>
-                              </div>
-                            )}
-                          </div>
-                        ) : (
-                          <p className="text-sm text-[#3d5a4a]">Sin datos tipograficos en este escaneo.</p>
-                        )}
-                      </Card>
-
-                      {/* CSS Validation Card */}
-                      <Card className="p-6">
-                        <div className="flex items-center gap-2 mb-4">
-                          <ShieldCheck size={20} className="text-[#006c48]" />
-                          <h3 className="text-lg font-semibold text-[#1a2e23]">Validacion CSS</h3>
-                          <InfoTooltip text="Errores y warnings detectados por el validador. Errores = sintaxis invalida o propiedades desconocidas; warnings = !important, vendor prefixes, reglas vacias." />
-                        </div>
-
-                        {w3cVal ? (
-                          <div className="space-y-3">
-                            <div className="flex items-center gap-3">
-                              {w3cVal.valid ? (
-                                <Badge className="gap-1.5 bg-[#e0f5ec] text-[#006c48]">
-                                  <CheckCircle size={12} />
-                                  CSS Valido
-                                </Badge>
-                              ) : (
-                                <Badge className="gap-1.5 bg-[#fef2f1] text-[#9e2b25]">
-                                  <XCircle size={12} />
-                                  Con errores
-                                </Badge>
-                              )}
-                            </div>
-
-                            <div className="grid grid-cols-2 gap-3">
-                              <div className="text-center p-3 rounded-xl bg-[#fef2f1]/50">
-                                <p className="text-2xl font-bold text-[#9e2b25]">{w3cVal.errorCount}</p>
-                                <p className="text-[10px] text-[#3d5a4a]">Errores</p>
-                              </div>
-                              <div className="text-center p-3 rounded-xl bg-[#fef6e0]/50">
-                                <p className="text-2xl font-bold text-[#a67c00]">{w3cVal.warningCount}</p>
-                                <p className="text-[10px] text-[#3d5a4a]">Warnings</p>
-                              </div>
-                            </div>
-
-                            {w3cVal.errors && w3cVal.errors.length > 0 && (
-                              <div className="space-y-1 max-h-24 overflow-y-auto">
-                                {w3cVal.errors.slice(0, 3).map((err: string, i: number) => (
-                                  <p key={i} className="text-[10px] text-[#9e2b25] bg-[#fef2f1] rounded px-2 py-1 truncate">
-                                    {err}
-                                  </p>
-                                ))}
-                                {w3cVal.errors.length > 3 && (
-                                  <p className="text-[10px] text-[#3d5a4a]">+{w3cVal.errors.length - 3} mas...</p>
-                                )}
-                              </div>
-                            )}
-                          </div>
-                        ) : (
-                          <div className="text-center py-6">
-                            <ShieldCheck size={28} className="mx-auto mb-2 text-[#3d5a4a]/20" />
-                            <p className="text-xs text-[#3d5a4a]">Sin datos. Ejecuta la validacion desde "Analizar".</p>
-                          </div>
-                        )}
-                      </Card>
-
-                      {/* Design System Coverage */}
-                      <Card className="p-6">
-                        <div className="flex items-center gap-2 mb-4">
-                          <Palette size={20} className="text-[#006c48]" />
-                          <h3 className="text-lg font-semibold text-[#1a2e23]">Cobertura DS</h3>
-                          <InfoTooltip text="Porcentaje de valores en tu CSS (colores, tipografia, spacing, z-index) que coinciden con los tokens de tu Design System. 100% = todo alineado." />
-                        </div>
-                        {latestDetail?.ds_coverage ? (
-                          <div className="space-y-3">
-                            <div className="flex items-center gap-4">
-                              <ScoreRing score={Math.round(latestDetail.ds_coverage.overallCoverage)} size={80} />
-                              <div className="flex-1 space-y-2">
-                                <CoverageBar label="Colores" value={latestDetail.ds_coverage.colors} color="#006c48" />
-                                <CoverageBar label="Tipografia" value={latestDetail.ds_coverage.fontSizes} color="#2a9d6e" />
-                                <CoverageBar label="Spacing" value={latestDetail.ds_coverage.spacing} color="#5cc49a" />
-                                <CoverageBar label="Z-index" value={latestDetail.ds_coverage.zIndex} color="#a67c00" />
-                              </div>
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="text-center py-6">
-                            <Palette size={28} className="mx-auto mb-2 text-[#3d5a4a]/20" />
-                            <p className="text-xs text-[#3d5a4a]">Sin datos. Carga tus tokens DS desde "Analizar".</p>
-                          </div>
-                        )}
-                      </Card>
-                    </div>
-
-                    {/* ── Font Weight — Two Column Layout ── */}
-                    {weights.length > 0 && (() => {
-                      const groups = new Map<string, { normalized: string; variants: { value: string; count: number }[]; totalCount: number }>()
-                      for (const w of weights) {
-                        const key = w.normalized
-                        if (!groups.has(key)) groups.set(key, { normalized: key, variants: [], totalCount: 0 })
-                        const g = groups.get(key)!
-                        g.variants.push({ value: w.value, count: w.count })
-                        g.totalCount += w.count
-                      }
-                      const allGroups = [...groups.values()].sort((a, b) => {
-                        const na = parseInt(a.normalized, 10), nb = parseInt(b.normalized, 10)
-                        if (!isNaN(na) && !isNaN(nb)) return na - nb
-                        return a.normalized.localeCompare(b.normalized)
-                      })
-                      const actionGroups = allGroups.filter(g => {
-                        const dsTarget = DS_WEIGHT_TARGET[g.normalized]
-                        return (dsTarget !== undefined && dsTarget !== null) || g.variants.length > 1
-                      })
-                      const okGroups = allGroups.filter(g => {
-                        const dsTarget = DS_WEIGHT_TARGET[g.normalized]
-                        return !(dsTarget !== undefined && dsTarget !== null) && g.variants.length <= 1
-                      })
-
-                      return (
-                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                          {/* LEFT: All Font Weights & Equivalences */}
-                          <Card className="p-6">
-                            <div className="flex items-center gap-2 mb-4">
-                              <Bold size={20} className="text-[#006c48]" />
-                              <h3 className="text-lg font-semibold text-[#1a2e23]">Font-Weights y Equivalencias</h3>
-                              <InfoTooltip text="Todos los pesos tipograficos encontrados, con sus variantes textuales (bold, normal, etc.) y el valor numerico equivalente." />
-                            </div>
-                            <div className="space-y-2">
-                              {allGroups.map((g) => {
-                                const dsTarget = DS_WEIGHT_TARGET[g.normalized]
-                                const needsConsolidation = dsTarget !== undefined && dsTarget !== null
-                                const approved = [100, 400, 600, 700].includes(parseInt(g.normalized, 10))
-                                return (
-                                  <div key={g.normalized} className={`flex items-center gap-3 p-2.5 rounded-lg border ${
-                                    needsConsolidation ? 'border-[#9e2b25]/20 bg-[#fef2f1]/30' :
-                                    approved ? 'border-[#006c48]/20 bg-[#e0f5ec]/30' :
-                                    'border-[#f0f2f1] bg-white'
-                                  }`}>
-                                    {/* Weight badge */}
-                                    <div
-                                      className={`w-10 text-center rounded py-1 text-xs font-bold text-white shrink-0 ${needsConsolidation ? 'line-through opacity-60' : ''}`}
-                                      style={{ backgroundColor: getWeightBarColor(g.normalized) }}
-                                    >
-                                      {g.normalized}
-                                    </div>
-                                    {/* Name + variants */}
-                                    <div className="flex-1 min-w-0">
-                                      <p className={`text-xs font-medium ${needsConsolidation ? 'text-[#9e2b25] line-through' : 'text-[#1a2e23]'}`}>
-                                        {getWeightLabel(g.normalized)}
-                                      </p>
-                                      <div className="flex flex-wrap gap-1 mt-1">
-                                        {g.variants.map((v, i) => (
-                                          <span key={i} className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-mono ${
-                                            needsConsolidation ? 'bg-[#fef2f1] text-[#9e2b25]' :
-                                            g.variants.length > 1 ? 'bg-[#fef6e0] text-[#a67c00]' :
-                                            'bg-[#f0f2f1] text-[#3d5a4a]'
-                                          }`}>
-                                            {v.value}
-                                            <span className="text-[8px] opacity-60">{v.count}x</span>
-                                          </span>
-                                        ))}
-                                      </div>
-                                    </div>
-                                    {/* Total count */}
-                                    <div className="text-right shrink-0">
-                                      <p className="text-sm font-bold text-[#1a2e23] tabular-nums">{g.totalCount}</p>
-                                      <p className="text-[9px] text-[#3d5a4a]">usos</p>
-                                    </div>
-                                  </div>
-                                )
-                              })}
-                            </div>
-                          </Card>
-
-                          {/* RIGHT: Actions */}
-                          <Card className="p-6">
-                            <div className="flex items-center gap-2 mb-4">
-                              <Bold size={20} className="text-[#9e2b25]" />
-                              <h3 className="text-lg font-semibold text-[#1a2e23]">Acciones de Font-Weight</h3>
-                              <InfoTooltip text="Pesos aprobados del DS: 100, 400, 600 y 700. Los demas se consolidan al peso aprobado mas cercano. Variantes duplicadas se unifican." />
-                            </div>
-
-                            {actionGroups.length > 0 ? (
-                              <div className="space-y-3">
-                                <p className="text-xs text-[#9e2b25] font-medium">
-                                  {actionGroups.length} accion{actionGroups.length !== 1 ? 'es' : ''} pendiente{actionGroups.length !== 1 ? 's' : ''}
-                                </p>
-                                {actionGroups.map((g) => {
-                                  const dsTarget = DS_WEIGHT_TARGET[g.normalized]
-                                  const needsConsolidation = dsTarget !== undefined && dsTarget !== null
-                                  const hasDupes = g.variants.length > 1
-                                  return (
-                                    <div key={g.normalized} className={`p-3 rounded-lg border ${
-                                      needsConsolidation ? 'border-[#9e2b25]/20 bg-[#fef2f1]/40' : 'border-[#a67c00]/20 bg-[#fef6e0]/40'
-                                    }`}>
-                                      <div className="flex items-center gap-2 mb-2">
-                                        <div
-                                          className="w-8 text-center rounded py-0.5 text-[10px] font-bold text-white line-through opacity-60"
-                                          style={{ backgroundColor: getWeightBarColor(g.normalized) }}
-                                        >
-                                          {g.normalized}
-                                        </div>
-                                        <span className="text-xs font-medium text-[#1a2e23] line-through">{getWeightLabel(g.normalized)}</span>
-                                        <span className="text-[10px] text-[#3d5a4a]">({g.totalCount} usos)</span>
-                                      </div>
-                                      {needsConsolidation && (
-                                        <div className="flex items-center gap-2 ml-10">
-                                          <Badge className="bg-[#fef2f1] text-[#9e2b25] text-[10px] px-2 py-0.5 shrink-0">Consolidar</Badge>
-                                          <span className="text-xs text-[#9e2b25]">→</span>
-                                          <div
-                                            className="w-8 text-center rounded py-0.5 text-[10px] font-bold text-white"
-                                            style={{ backgroundColor: getWeightBarColor(dsTarget!) }}
-                                          >
-                                            {dsTarget}
-                                          </div>
-                                          <span className="text-xs font-medium text-[#006c48]">{getWeightLabel(dsTarget!)}</span>
-                                        </div>
-                                      )}
-                                      {!needsConsolidation && hasDupes && (
-                                        <div className="flex items-center gap-2 ml-10">
-                                          <Badge className="bg-[#fef6e0] text-[#a67c00] text-[10px] px-2 py-0.5 shrink-0">Unificar</Badge>
-                                          <span className="text-xs text-[#a67c00]">
-                                            {g.variants.map(v => v.value).join(', ')} → usar <span className="font-mono font-bold">{g.normalized}</span>
-                                          </span>
-                                        </div>
-                                      )}
-                                    </div>
-                                  )
-                                })}
-                              </div>
-                            ) : (
-                              <div className="flex items-center gap-2 p-4 bg-[#e0f5ec] rounded-lg">
-                                <CheckCircle size={18} className="text-[#006c48]" />
-                                <p className="text-sm text-[#006c48] font-medium">Todos los pesos son correctos</p>
-                              </div>
-                            )}
-
-                            {/* OK weights summary */}
-                            {okGroups.length > 0 && (
-                              <div className="mt-4 pt-4 border-t border-[#f0f2f1]">
-                                <p className="text-[10px] text-[#3d5a4a] font-semibold uppercase tracking-wider mb-2">Pesos correctos</p>
-                                <div className="flex flex-wrap gap-2">
-                                  {okGroups.map(g => (
-                                    <div key={g.normalized} className="flex items-center gap-1.5 bg-[#e0f5ec]/50 border border-[#006c48]/10 rounded-lg px-2.5 py-1.5">
-                                      <div
-                                        className="w-7 text-center rounded py-0.5 text-[9px] font-bold text-white"
-                                        style={{ backgroundColor: getWeightBarColor(g.normalized) }}
-                                      >
-                                        {g.normalized}
-                                      </div>
-                                      <span className="text-[10px] text-[#006c48] font-medium">{getWeightLabel(g.normalized)}</span>
-                                      <span className="text-[9px] text-[#3d5a4a]">{g.totalCount}x</span>
-                                    </div>
-                                  ))}
-                                </div>
-                              </div>
-                            )}
-                          </Card>
-                        </div>
-                      )
-                    })()}
-
-                    {/* ── Font Families Chart ── */}
-                    {families.length > 0 && (
-                      <Card className="p-6">
-                        <div className="flex items-center gap-2 mb-1">
-                          <Type size={20} className="text-[#006c48]" />
-                          <h3 className="text-lg font-semibold text-[#1a2e23]">Familias Tipograficas</h3>
-                          <InfoTooltip text="Distribucion de todas las font-family del CSS. Verde = Suisse (DS), amarillo = genericas, rojo = a eliminar." />
-                        </div>
-                        <p className="text-xs text-[#3d5a4a] mb-4">
-                          {dsCount} usos Suisse · {genericCount} genericas · {eliminateCount} a eliminar
-                        </p>
-                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                          {/* Bar chart */}
-                          <ResponsiveContainer width="100%" height={Math.max(180, families.length * 32)}>
-                            <BarChart
-                              data={[...families].sort((a, b) => b.count - a.count).map(f => ({
-                                name: (f.normalized || f.value).replace(/['"]/g, '').slice(0, 20),
-                                full: (f.normalized || f.value).replace(/['"]/g, ''),
-                                value: f.count,
-                                classification: classifyFamily(f.normalized || f.value),
-                              }))}
-                              layout="vertical"
-                              margin={{ left: 10, right: 20, top: 5, bottom: 5 }}
-                            >
-                              <CartesianGrid strokeDasharray="3 3" stroke="#f0f2f1" />
-                              <XAxis type="number" tick={{ fontSize: 10, fill: '#3d5a4a' }} />
-                              <YAxis dataKey="name" type="category" tick={{ fontSize: 10, fill: '#3d5a4a' }} width={130} />
-                              <Tooltip
-                                contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.08)', fontSize: '12px' }}
-                                formatter={(val: any, _: any, props: any) => {
-                                  const cls = props?.payload?.classification === 'ds' ? 'Suisse (DS)' : props?.payload?.classification === 'generic' ? 'Generica' : 'A eliminar'
-                                  return [`${val} usos — ${cls}`, props?.payload?.full || '']
-                                }}
-                              />
-                              <Bar dataKey="value" radius={[0, 4, 4, 0]} name="Usos">
-                                {[...families].sort((a, b) => b.count - a.count).map((f, i) => {
-                                  const cls = classifyFamily(f.normalized || f.value)
-                                  return <Cell key={i} fill={cls === 'ds' ? '#006c48' : cls === 'generic' ? '#a67c00' : '#9e2b25'} />
-                                })}
-                              </Bar>
-                            </BarChart>
-                          </ResponsiveContainer>
-
-                          {/* Legend + details */}
-                          <div className="space-y-3">
-                            <div className="flex items-center gap-4 text-[10px]">
-                              <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-[#006c48]" /> Suisse (DS)</span>
-                              <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-[#a67c00]" /> Genericas</span>
-                              <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-[#9e2b25]" /> A eliminar</span>
-                            </div>
-                            {eliminateList.length > 0 && (
-                              <div className="space-y-1.5">
-                                <p className="text-xs font-semibold text-[#9e2b25]">Reemplazar por Suisse:</p>
-                                {eliminateList.sort((a, b) => b.count - a.count).map((f, i) => (
-                                  <div key={i} className="flex items-center justify-between bg-[#fef2f1] rounded-lg px-3 py-1.5">
-                                    <span className="text-xs font-mono text-[#9e2b25]">{(f.normalized || f.value).replace(/['"]/g, '')}</span>
-                                    <Badge className="bg-[#fef2f1] text-[#9e2b25] text-[10px] px-1.5 py-0">{f.count} usos</Badge>
-                                  </div>
-                                ))}
-                              </div>
-                            )}
-                            {eliminateList.length === 0 && (
-                              <div className="flex items-center gap-2 p-3 bg-[#e0f5ec] rounded-lg">
-                                <CheckCircle size={16} className="text-[#006c48]" />
-                                <p className="text-xs text-[#006c48] font-medium">Todas las familias son correctas</p>
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      </Card>
-                    )}
-
-                    {/* ── Hardcoded Values Summary ── */}
-                    {ad && (
-                      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                        {/* Colors card */}
-                        <Card className="p-6">
-                          <div className="flex items-center gap-2 mb-3">
-                            <Palette size={18} className="text-[#006c48]" />
-                            <h3 className="text-sm font-semibold text-[#1a2e23]">Colores Hardcodeados</h3>
-                          </div>
-                          {ad.colors.length > 0 ? (
-                            <div className="space-y-3">
-                              <p className="text-3xl font-bold text-[#1a2e23]">{ad.colors.length}</p>
-                              <p className="text-xs text-[#3d5a4a]">colores escritos directamente en el CSS</p>
-                              <div className="flex flex-wrap gap-1 max-h-20 overflow-y-auto">
-                                {[...ad.colors].sort((a, b) => b.count - a.count).slice(0, 20).map((c, i) => (
-                                  <div key={i} className="w-5 h-5 rounded border border-black/10 shrink-0" style={{ backgroundColor: c.normalized }} title={`${c.value} (${c.count}x)`} />
-                                ))}
-                                {ad.colors.length > 20 && <span className="text-[10px] text-[#3d5a4a] self-center ml-1">+{ad.colors.length - 20}</span>}
-                              </div>
-                            </div>
-                          ) : (
-                            <p className="text-sm text-[#3d5a4a]">Sin colores hardcodeados</p>
-                          )}
-                        </Card>
-
-                        {/* Spacing card */}
-                        {(() => {
-                          const spacing = ad.spacingValues || []
-                          const isPx = (val: string) => /px$/i.test(val) || val === '0' || /^\d+$/.test(val)
-                          const isPercent = (val: string) => /%$/.test(val) || /v[wh]$/i.test(val)
-                          const pxVals = spacing.filter(s => isPx(s.normalized))
-                          const pctVals = spacing.filter(s => isPercent(s.normalized))
-                          const otherVals = spacing.filter(s => !isPx(s.normalized) && !isPercent(s.normalized))
-                          const pxBad = pxVals.filter(s => {
-                            const n = parseFloat(s.normalized)
-                            return isNaN(n) || (n !== 0 && n % 8 !== 0)
-                          })
-
-                          return (
-                            <Card className="p-6">
-                              <div className="flex items-center gap-2 mb-3">
-                                <Grid3X3 size={18} className="text-[#006c48]" />
-                                <h3 className="text-sm font-semibold text-[#1a2e23]">Spacing</h3>
-                                <InfoTooltip text="Valores de margin/padding/gap. Los px deben ser multiplos de 8. Porcentajes y otras unidades se muestran aparte." />
-                              </div>
-                              {spacing.length > 0 ? (
-                                <div className="space-y-3">
-                                  <p className="text-3xl font-bold text-[#1a2e23]">{spacing.length}</p>
-                                  <p className="text-xs text-[#3d5a4a]">valores de spacing hardcodeados</p>
-
-                                  <div className="grid grid-cols-3 gap-2">
-                                    <div className="text-center p-2 rounded-lg bg-[#f8f9fa]">
-                                      <p className="text-sm font-bold text-[#1a2e23]">{pxVals.length}</p>
-                                      <p className="text-[9px] text-[#3d5a4a]">px</p>
-                                    </div>
-                                    <div className="text-center p-2 rounded-lg bg-[#f0f4ff]">
-                                      <p className="text-sm font-bold text-[#2c5282]">{pctVals.length}</p>
-                                      <p className="text-[9px] text-[#3d5a4a]">% / vw / vh</p>
-                                    </div>
-                                    <div className="text-center p-2 rounded-lg bg-[#f8f9fa]">
-                                      <p className="text-sm font-bold text-[#3d5a4a]">{otherVals.length}</p>
-                                      <p className="text-[9px] text-[#3d5a4a]">rem / em / otro</p>
-                                    </div>
-                                  </div>
-
-                                  {pxBad.length > 0 ? (
-                                    <div className="flex items-start gap-2 p-2 bg-[#fef2f1] rounded-lg">
-                                      <AlertTriangle size={14} className="text-[#9e2b25] shrink-0 mt-0.5" />
-                                      <div>
-                                        <p className="text-xs font-semibold text-[#9e2b25]">{pxBad.length} px fuera de la grid 8</p>
-                                        <p className="text-[10px] text-[#9e2b25]/70 truncate">
-                                          {pxBad.slice(0, 5).map(s => s.value).join(', ')}
-                                          {pxBad.length > 5 ? ` +${pxBad.length - 5}` : ''}
-                                        </p>
-                                      </div>
-                                    </div>
-                                  ) : pxVals.length > 0 ? (
-                                    <div className="flex items-center gap-2 p-2 bg-[#e0f5ec] rounded-lg">
-                                      <CheckCircle size={12} className="text-[#006c48]" />
-                                      <p className="text-[11px] text-[#006c48] font-medium">Todos los px siguen la grid de 8</p>
-                                    </div>
-                                  ) : null}
-                                </div>
-                              ) : (
-                                <p className="text-sm text-[#3d5a4a]">Sin spacing hardcodeado</p>
-                              )}
-                            </Card>
-                          )
-                        })()}
-
-                        {/* Z-index card */}
-                        {(() => {
-                          const zValues = ad.zIndexValues || []
-                          const parsed = zValues.map(z => ({ ...z, num: parseInt(z.value, 10) })).filter(z => !isNaN(z.num))
-                          const negatives = parsed.filter(z => z.num < 0)
-                          const irregulars = parsed.filter(z => z.num !== 0 && z.num % 1000 !== 0)
-                          // Count how many of the 10 standard depth layers (0–9000) are used
-                          const STANDARD_LAYERS = 10 // 0, 1000, 2000 … 9000
-                          const usedStandard = new Set(
-                            parsed.filter(z => z.num >= 0 && z.num < 10000).map(z => Math.floor(z.num / 1000) * 1000)
-                          )
-                          const outOfRange = parsed.filter(z => z.num >= 10000)
-
-
-                          return (
-                            <Card className="p-6">
-                              <div className="flex items-center gap-2 mb-3">
-                                <Box size={18} className="text-[#006c48]" />
-                                <h3 className="text-sm font-semibold text-[#1a2e23]">Z-index</h3>
-                                <InfoTooltip text="Valores z-index. Deben ir de 1000 en 1000. Cada rango se reserva para un tipo de elemento UI." />
-                              </div>
-                              {zValues.length > 0 ? (
-                                <div className="space-y-3">
-                                  <div className="flex items-baseline gap-2">
-                                    <p className="text-3xl font-bold text-[#1a2e23]">{zValues.length}</p>
-                                    <p className="text-xs text-[#3d5a4a]">valores en {usedStandard.size} de {STANDARD_LAYERS} capas</p>
-                                  </div>
-
-                                  <div className="grid grid-cols-2 gap-2">
-                                    <div className="text-center p-2 rounded-lg bg-[#f8f9fa]">
-                                      <p className="text-sm font-bold text-[#1a2e23]">{usedStandard.size}</p>
-                                      <p className="text-[9px] text-[#3d5a4a]">capas usadas</p>
-                                    </div>
-                                    <div className="text-center p-2 rounded-lg bg-[#f8f9fa]">
-                                      <p className="text-sm font-bold text-[#3d5a4a]">{STANDARD_LAYERS - usedStandard.size}</p>
-                                      <p className="text-[9px] text-[#3d5a4a]">capas libres</p>
-                                    </div>
-                                  </div>
-
-                                  {irregulars.length > 0 && (
-                                    <div className="flex items-start gap-2 p-2 bg-[#fef2f1] rounded-lg">
-                                      <AlertTriangle size={14} className="text-[#9e2b25] shrink-0 mt-0.5" />
-                                      <div>
-                                        <p className="text-xs font-semibold text-[#9e2b25]">{irregulars.length} fuera de la escala ×1000</p>
-                                        <p className="text-[10px] text-[#9e2b25]/70 truncate">
-                                          {irregulars.slice(0, 5).map(z => z.value).join(', ')}
-                                          {irregulars.length > 5 ? ` +${irregulars.length - 5}` : ''}
-                                        </p>
-                                      </div>
-                                    </div>
-                                  )}
-
-                                  {outOfRange.length > 0 && (
-                                    <div className="flex items-start gap-2 p-2 bg-[#fef2f1] rounded-lg">
-                                      <AlertTriangle size={14} className="text-[#9e2b25] shrink-0 mt-0.5" />
-                                      <p className="text-xs text-[#9e2b25]">
-                                        <strong>{outOfRange.length}</strong> valor{outOfRange.length !== 1 ? 'es' : ''} por encima de 9999
-                                      </p>
-                                    </div>
-                                  )}
-
-                                  {negatives.length > 0 && (
-                                    <div className="flex items-start gap-2 p-2 bg-[#fef6e0] rounded-lg">
-                                      <AlertTriangle size={14} className="text-[#a67c00] shrink-0 mt-0.5" />
-                                      <p className="text-xs text-[#a67c00]">
-                                        <strong>{negatives.length}</strong> valor{negatives.length !== 1 ? 'es' : ''} negativo{negatives.length !== 1 ? 's' : ''}
-                                      </p>
-                                    </div>
-                                  )}
-
-                                  {irregulars.length === 0 && negatives.length === 0 && outOfRange.length === 0 && (
-                                    <div className="flex items-center gap-2 p-2 bg-[#e0f5ec] rounded-lg">
-                                      <CheckCircle size={12} className="text-[#006c48]" />
-                                      <p className="text-[11px] text-[#006c48] font-medium">Escala limpia — todo en multiplos de 1000</p>
-                                    </div>
-                                  )}
-                                </div>
-                              ) : (
-                                <p className="text-sm text-[#3d5a4a]">Sin z-index hardcodeado</p>
-                              )}
-                            </Card>
-                          )
-                        })()}
+                        <p className="text-sm text-[#3d5a4a]">Evolucion de la calidad del CSS a lo largo de los escaneos</p>
                       </div>
-                    )}
-                  </div>
-                )
-              })()}
-
-              {/* ══════════════════════════════════════════════════════════════
-                   SECTION 2a — Legacy Reduction Charts
-                 ══════════════════════════════════════════════════════════════ */}
-              {legacyChartData.length > 1 && (
-                <div>
-                  <SectionHeader
-                    title="Reduccion de Legacy"
-                    tooltip="Evolucion de los valores hardcodeados, errores y deuda tecnica CSS a lo largo de los escaneos. El objetivo es que todas las lineas bajen hasta cero."
-                  />
-                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                    {/* Hardcoded Colors */}
-                    <Card className="p-6">
-                      <ChartTitle
-                        title="Colores Hardcodeados"
-                        tooltip="Cantidad de colores escritos directamente en el CSS. Deben reemplazarse por variables del Design System."
-                        first={legacyChartData[0]?.colorsCount}
-                        last={legacyChartData[legacyChartData.length - 1]?.colorsCount}
-                      />
-                      <ResponsiveContainer width="100%" height={200}>
-                        <AreaChart data={legacyChartData}>
-                          <defs>
-                            <linearGradient id="gradColors" x1="0" y1="0" x2="0" y2="1">
-                              <stop offset="5%" stopColor="#9e2b25" stopOpacity={0.2} />
-                              <stop offset="95%" stopColor="#9e2b25" stopOpacity={0} />
-                            </linearGradient>
-                          </defs>
-                          <CartesianGrid strokeDasharray="3 3" stroke="#f0f2f1" />
-                          <XAxis dataKey="date" tick={{ fontSize: 10 }} tickLine={false} />
-                          <YAxis tick={{ fontSize: 10 }} tickLine={false} axisLine={false} />
-                          <Tooltip contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.08)', fontSize: '12px' }} />
-                          <Area type="monotone" dataKey="colorsCount" stroke="#9e2b25" strokeWidth={2} fill="url(#gradColors)" name="Colores" dot={{ r: 3 }} />
-                        </AreaChart>
-                      </ResponsiveContainer>
-                    </Card>
-
-                    {/* Fonts to Eliminate */}
-                    <Card className="p-6">
-                      <ChartTitle
-                        title="Fuentes a Eliminar"
-                        tooltip="Familias tipograficas que no son Suisse ni genericas. Deben reemplazarse por Suisse."
-                        first={legacyChartData[0]?.eliminateFamilies}
-                        last={legacyChartData[legacyChartData.length - 1]?.eliminateFamilies}
-                      />
-                      <ResponsiveContainer width="100%" height={200}>
-                        <AreaChart data={legacyChartData}>
-                          <defs>
-                            <linearGradient id="gradFonts" x1="0" y1="0" x2="0" y2="1">
-                              <stop offset="5%" stopColor="#a67c00" stopOpacity={0.2} />
-                              <stop offset="95%" stopColor="#a67c00" stopOpacity={0} />
-                            </linearGradient>
-                          </defs>
-                          <CartesianGrid strokeDasharray="3 3" stroke="#f0f2f1" />
-                          <XAxis dataKey="date" tick={{ fontSize: 10 }} tickLine={false} />
-                          <YAxis tick={{ fontSize: 10 }} tickLine={false} axisLine={false} allowDecimals={false} />
-                          <Tooltip contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.08)', fontSize: '12px' }} />
-                          <Area type="monotone" dataKey="eliminateFamilies" stroke="#a67c00" strokeWidth={2} fill="url(#gradFonts)" name="Fuentes" dot={{ r: 3 }} />
-                        </AreaChart>
-                      </ResponsiveContainer>
-                    </Card>
-
-                    {/* Spacing — px fuera de grid 8 */}
-                    <Card className="p-6">
-                      <ChartTitle
-                        title="Spacing fuera de Grid 8"
-                        tooltip="Valores de spacing en px que no son multiplos de 8. Deben ajustarse a la escala de 8px."
-                        first={legacyChartData[0]?.spacingBadPx}
-                        last={legacyChartData[legacyChartData.length - 1]?.spacingBadPx}
-                      />
-                      <ResponsiveContainer width="100%" height={200}>
-                        <BarChart data={legacyChartData}>
-                          <CartesianGrid strokeDasharray="3 3" stroke="#f0f2f1" />
-                          <XAxis dataKey="date" tick={{ fontSize: 10 }} tickLine={false} />
-                          <YAxis tick={{ fontSize: 10 }} tickLine={false} axisLine={false} allowDecimals={false} />
-                          <Tooltip contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.08)', fontSize: '12px' }} />
-                          <Bar dataKey="spacingBadPx" fill="#9e2b25" radius={[4, 4, 0, 0]} name="px fuera de grid 8" />
-                        </BarChart>
-                      </ResponsiveContainer>
-                    </Card>
-
-                    {/* Z-index irregulares */}
-                    <Card className="p-6">
-                      <ChartTitle
-                        title="Z-index Irregulares"
-                        tooltip="Valores z-index que no son multiplos de 1000. Deben ajustarse a la escala de profundidad."
-                        first={legacyChartData[0]?.zIrregulars}
-                        last={legacyChartData[legacyChartData.length - 1]?.zIrregulars}
-                      />
-                      <ResponsiveContainer width="100%" height={200}>
-                        <BarChart data={legacyChartData}>
-                          <CartesianGrid strokeDasharray="3 3" stroke="#f0f2f1" />
-                          <XAxis dataKey="date" tick={{ fontSize: 10 }} tickLine={false} />
-                          <YAxis tick={{ fontSize: 10 }} tickLine={false} axisLine={false} allowDecimals={false} />
-                          <Tooltip contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.08)', fontSize: '12px' }} />
-                          <Bar dataKey="zIrregulars" fill="#a67c00" radius={[4, 4, 0, 0]} name="Z-index irregulares" />
-                        </BarChart>
-                      </ResponsiveContainer>
-                    </Card>
-
-                    {/* Weight consolidation actions */}
-                    <Card className="p-6">
-                      <ChartTitle
-                        title="Grosores a Consolidar"
-                        tooltip="Pesos tipograficos que deben trasladarse a los pesos aprobados del DS (100, 400, 600, 700)."
-                        first={legacyChartData[0]?.weightActions}
-                        last={legacyChartData[legacyChartData.length - 1]?.weightActions}
-                      />
-                      <ResponsiveContainer width="100%" height={200}>
-                        <BarChart data={legacyChartData}>
-                          <CartesianGrid strokeDasharray="3 3" stroke="#f0f2f1" />
-                          <XAxis dataKey="date" tick={{ fontSize: 10 }} tickLine={false} />
-                          <YAxis tick={{ fontSize: 10 }} tickLine={false} axisLine={false} allowDecimals={false} />
-                          <Tooltip contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.08)', fontSize: '12px' }} />
-                          <Bar dataKey="weightActions" fill="#5cc49a" radius={[4, 4, 0, 0]} name="Grosores a consolidar" />
-                        </BarChart>
-                      </ResponsiveContainer>
-                    </Card>
-
-                    {/* Validation Errors */}
-                    <Card className="p-6">
-                      <ChartTitle
-                        title="Errores de Validacion"
-                        tooltip="Errores detectados por el validador CSS. Incluye propiedades desconocidas, sintaxis invalida, etc."
-                        first={legacyChartData[0]?.w3cErrors}
-                        last={legacyChartData[legacyChartData.length - 1]?.w3cErrors}
-                      />
-                      <ResponsiveContainer width="100%" height={200}>
-                        <AreaChart data={legacyChartData}>
-                          <defs>
-                            <linearGradient id="gradErrors" x1="0" y1="0" x2="0" y2="1">
-                              <stop offset="5%" stopColor="#9e2b25" stopOpacity={0.15} />
-                              <stop offset="95%" stopColor="#9e2b25" stopOpacity={0} />
-                            </linearGradient>
-                          </defs>
-                          <CartesianGrid strokeDasharray="3 3" stroke="#f0f2f1" />
-                          <XAxis dataKey="date" tick={{ fontSize: 10 }} tickLine={false} />
-                          <YAxis tick={{ fontSize: 10 }} tickLine={false} axisLine={false} allowDecimals={false} />
-                          <Tooltip contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.08)', fontSize: '12px' }} />
-                          <Area type="monotone" dataKey="w3cErrors" stroke="#9e2b25" strokeWidth={2} fill="url(#gradErrors)" name="Errores" dot={{ r: 3 }} />
-                        </AreaChart>
-                      </ResponsiveContainer>
-                    </Card>
-                  </div>
-                </div>
-              )}
-
-              {/* ══════════════════════════════════════════════════════════════
-                   SECTION 2b — HolyGrail5 Live Comparison
-                 ══════════════════════════════════════════════════════════════ */}
-              <div>
-                <SectionHeader title="Comparativa con HolyGrail5" tooltip="Cruce automatico de tu CSS con el framework HolyGrail5. Muestra que valores ya existen en HG5 (redundantes) y cuales no. Usa esto para eliminar codigo duplicado.">
-                  {!hg5Loading && (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="gap-2"
-                      onClick={() => {
-                        hg5FetchedRef.current = false
-                        if (latestDetail?.analysis_data) fetchHg5Comparison(latestDetail.analysis_data)
-                      }}
-                    >
-                      <RefreshCw size={14} />
-                      Recargar
-                    </Button>
-                  )}
-                </SectionHeader>
-
-                {hg5Loading ? (
-                  <Card className="p-8 flex items-center justify-center gap-3">
-                    <Loader2 className="animate-spin text-[#006c48]" size={20} />
-                    <p className="text-sm text-[#3d5a4a]">Cargando CSS de HolyGrail5...</p>
-                  </Card>
-                ) : hg5Error ? (
-                  <Card className="p-6">
-                    <p className="text-sm text-[#9e2b25]">Error al cargar HG5: {hg5Error}</p>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="mt-3"
-                      onClick={() => {
-                        hg5FetchedRef.current = false
-                        if (latestDetail?.analysis_data) fetchHg5Comparison(latestDetail.analysis_data)
-                      }}
-                    >
-                      Reintentar
-                    </Button>
-                  </Card>
-                ) : hg5Coverage && hg5Tokens ? (
-                  <div className="space-y-4">
-                    {/* HG5 overview cards */}
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-3">
-                      <Card className="p-4 col-span-1">
-                        <p className="text-xs text-[#3d5a4a] mb-1">Cobertura HG5</p>
-                        <p className="text-3xl font-bold" style={{ color: hg5Coverage.overallCoverage >= 50 ? '#006c48' : '#9e2b25' }}>
-                          {hg5Coverage.overallCoverage.toFixed(0)}%
-                        </p>
-                        <p className="text-xs text-[#3d5a4a] mt-1">de tus valores ya estan en HG5</p>
-                      </Card>
-                      <Card className="p-4">
-                        <div className="flex items-center gap-2 mb-1">
-                          <Palette size={14} className="text-[#006c48]" />
-                          <p className="text-xs text-[#3d5a4a]">Colores</p>
-                        </div>
-                        <p className="text-xl font-bold text-[#1a2e23]">{hg5Coverage.colors.matchedToDs}/{hg5Coverage.colors.totalUsed}</p>
-                        <div className="flex items-center gap-2 mt-1">
-                          <div className="flex-1 h-1.5 bg-[#f0f2f1] rounded-full overflow-hidden">
-                            <div className="h-full rounded-full bg-[#006c48]" style={{ width: `${hg5Coverage.colors.coverage}%` }} />
-                          </div>
-                          <span className="text-xs font-medium text-[#3d5a4a]">{hg5Coverage.colors.coverage.toFixed(0)}%</span>
-                        </div>
-                        {hg5Coverage.colors.redundant.length > 0 && (
-                          <p className="text-xs text-[#9e2b25] mt-1">{hg5Coverage.colors.redundant.length} redundantes</p>
-                        )}
-                      </Card>
-                      <Card className="p-4">
-                        <div className="flex items-center gap-2 mb-1">
-                          <Type size={14} className="text-[#2a9d6e]" />
-                          <p className="text-xs text-[#3d5a4a]">Font Sizes</p>
-                        </div>
-                        <p className="text-xl font-bold text-[#1a2e23]">{hg5Coverage.fontSizes.matchedToDs}/{hg5Coverage.fontSizes.totalUsed}</p>
-                        <div className="flex items-center gap-2 mt-1">
-                          <div className="flex-1 h-1.5 bg-[#f0f2f1] rounded-full overflow-hidden">
-                            <div className="h-full rounded-full bg-[#2a9d6e]" style={{ width: `${hg5Coverage.fontSizes.coverage}%` }} />
-                          </div>
-                          <span className="text-xs font-medium text-[#3d5a4a]">{hg5Coverage.fontSizes.coverage.toFixed(0)}%</span>
-                        </div>
-                        {hg5Coverage.fontSizes.redundant.length > 0 && (
-                          <p className="text-xs text-[#9e2b25] mt-1">{hg5Coverage.fontSizes.redundant.length} redundantes</p>
-                        )}
-                      </Card>
-                      <Card className="p-4">
-                        <div className="flex items-center gap-2 mb-1">
-                          <Ruler size={14} className="text-[#5cc49a]" />
-                          <p className="text-xs text-[#3d5a4a]">Spacing</p>
-                        </div>
-                        <p className="text-xl font-bold text-[#1a2e23]">{hg5Coverage.spacing.matchedToDs}/{hg5Coverage.spacing.totalUsed}</p>
-                        <div className="flex items-center gap-2 mt-1">
-                          <div className="flex-1 h-1.5 bg-[#f0f2f1] rounded-full overflow-hidden">
-                            <div className="h-full rounded-full bg-[#5cc49a]" style={{ width: `${hg5Coverage.spacing.coverage}%` }} />
-                          </div>
-                          <span className="text-xs font-medium text-[#3d5a4a]">{hg5Coverage.spacing.coverage.toFixed(0)}%</span>
-                        </div>
-                        {hg5Coverage.spacing.redundant.length > 0 && (
-                          <p className="text-xs text-[#9e2b25] mt-1">{hg5Coverage.spacing.redundant.length} redundantes</p>
-                        )}
-                      </Card>
-                      <Card className="p-4">
-                        <div className="flex items-center gap-2 mb-1">
-                          <Layers size={14} className="text-[#a67c00]" />
-                          <p className="text-xs text-[#3d5a4a]">Z-index</p>
-                        </div>
-                        <p className="text-xl font-bold text-[#1a2e23]">{hg5Coverage.zIndex.matchedToDs}/{hg5Coverage.zIndex.totalUsed}</p>
-                        <div className="flex items-center gap-2 mt-1">
-                          <div className="flex-1 h-1.5 bg-[#f0f2f1] rounded-full overflow-hidden">
-                            <div className="h-full rounded-full bg-[#a67c00]" style={{ width: `${hg5Coverage.zIndex.coverage}%` }} />
-                          </div>
-                          <span className="text-xs font-medium text-[#3d5a4a]">{hg5Coverage.zIndex.coverage.toFixed(0)}%</span>
-                        </div>
-                        {hg5Coverage.zIndex.redundant.length > 0 && (
-                          <p className="text-xs text-[#9e2b25] mt-1">{hg5Coverage.zIndex.redundant.length} redundantes</p>
-                        )}
-                      </Card>
+                      <div className="flex items-center gap-3">
+                        <ScoreRing score={latestScan.health_score} size={80} />
+                      </div>
                     </div>
-
-                    {/* HG5 Redundant values detail */}
-                    {(hg5Coverage.colors.redundant.length > 0 || hg5Coverage.fontSizes.redundant.length > 0 || hg5Coverage.spacing.redundant.length > 0) && (
-                      <Card className="p-6 border-[#fef2f1]">
-                        <div className="flex items-center gap-2 mb-1">
-                          <AlertTriangle size={16} className="text-[#9e2b25]" />
-                          <h3 className="text-sm font-semibold text-[#9e2b25]">
-                            Valores redundantes — ya existen en HolyGrail5
-                          </h3>
-                        </div>
-                        <p className="text-xs text-[#3d5a4a] mb-4">
-                          Puedes eliminarlos de tu CSS y usar las clases/variables del framework.
-                        </p>
-                        <div className="space-y-4">
-                          {hg5Coverage.colors.redundant.length > 0 && (
-                            <div>
-                              <h4 className="text-xs font-semibold text-[#1a2e23] mb-2">
-                                Colores redundantes ({hg5Coverage.colors.redundant.length})
-                              </h4>
-                              <div className="flex flex-wrap gap-2">
-                                {hg5Coverage.colors.redundant.sort((a,b) => b.count - a.count).map((item, i) => {
-                                  const varName = hg5Tokens.varNames[item.value]
-                                  return (
-                                  <div key={i} className="flex items-center gap-1.5 bg-[#fef2f1] rounded-lg px-2.5 py-1.5">
-                                    <div className="w-4 h-4 rounded border shrink-0" style={{ backgroundColor: item.value }} />
-                                    <span className="text-xs font-mono">{item.value}</span>
-                                    {varName && (
-                                      <>
-                                        <span className="text-[10px] text-[#3d5a4a]">→</span>
-                                        <span className="text-[10px] font-mono text-[#006c48]">{varName}</span>
-                                      </>
-                                    )}
-                                    <Badge variant="secondary" className="text-[10px] px-1.5 py-0">{item.count}x</Badge>
-                                  </div>
-                                  )
-                                })}
-                              </div>
-                            </div>
-                          )}
-                          {hg5Coverage.fontSizes.redundant.length > 0 && (
-                            <div>
-                              <h4 className="text-xs font-semibold text-[#1a2e23] mb-2">
-                                Font-sizes redundantes ({hg5Coverage.fontSizes.redundant.length})
-                              </h4>
-                              <div className="flex flex-wrap gap-2">
-                                {hg5Coverage.fontSizes.redundant.sort((a,b) => b.count - a.count).map((item, i) => {
-                                  const varName = hg5Tokens.varNames[item.value]
-                                  return (
-                                  <div key={i} className="flex items-center gap-1.5 bg-[#fef2f1] rounded-lg px-2.5 py-1.5">
-                                    <span className="text-xs font-mono">{item.value}</span>
-                                    {varName && (
-                                      <>
-                                        <span className="text-[10px] text-[#3d5a4a]">→</span>
-                                        <span className="text-[10px] font-mono text-[#006c48]">{varName}</span>
-                                      </>
-                                    )}
-                                    <Badge variant="secondary" className="text-[10px] px-1.5 py-0">{item.count}x</Badge>
-                                  </div>
-                                  )
-                                })}
-                              </div>
-                            </div>
-                          )}
-                          {hg5Coverage.spacing.redundant.length > 0 && (
-                            <div>
-                              <h4 className="text-xs font-semibold text-[#1a2e23] mb-2">
-                                Spacing redundante ({hg5Coverage.spacing.redundant.length})
-                              </h4>
-                              <div className="flex flex-wrap gap-2">
-                                {hg5Coverage.spacing.redundant.sort((a,b) => b.count - a.count).map((item, i) => {
-                                  const varName = hg5Tokens.varNames[item.value]
-                                  return (
-                                  <div key={i} className="flex items-center gap-1.5 bg-[#fef2f1] rounded-lg px-2.5 py-1.5">
-                                    <span className="text-xs font-mono">{item.value}</span>
-                                    {varName && (
-                                      <>
-                                        <span className="text-[10px] text-[#3d5a4a]">→</span>
-                                        <span className="text-[10px] font-mono text-[#006c48]">{varName}</span>
-                                      </>
-                                    )}
-                                    <Badge variant="secondary" className="text-[10px] px-1.5 py-0">{item.count}x</Badge>
-                                  </div>
-                                  )
-                                })}
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      </Card>
-                    )}
-
-                    {/* HG5 Mismatches - values NOT in framework */}
-                    {hg5Coverage.colors.mismatches.length > 0 && (
-                      <Card className="p-6">
-                        <h3 className="text-sm font-semibold text-[#1a2e23] mb-1">
-                          Colores fuera de HG5 ({hg5Coverage.colors.mismatches.length})
-                        </h3>
-                        <p className="text-xs text-[#3d5a4a] mb-3">
-                          Estos colores no existen en HolyGrail5. Se sugiere el token HG5 mas cercano.
-                        </p>
-                        <div className="flex flex-wrap gap-2">
-                          {(showAllMismatches ? hg5Coverage.colors.mismatches : hg5Coverage.colors.mismatches.slice(0, 20)).map((m, i) => {
-                            const varName = m.closestDsValue ? hg5Tokens.varNames[m.closestDsValue] : null
-                            return (
-                            <div key={i} className="flex items-center gap-1.5 bg-[#f8f9fa] rounded-lg px-2.5 py-1.5">
-                              <div className="w-4 h-4 rounded border shrink-0" style={{ backgroundColor: m.value }} />
-                              <span className="text-xs font-mono">{m.value}</span>
-                              {m.closestDsValue && (
-                                <>
-                                  <span className="text-[10px] text-[#3d5a4a]">→</span>
-                                  <div className="w-3 h-3 rounded border shrink-0" style={{ backgroundColor: m.closestDsValue }} />
-                                  <span className="text-[10px] font-mono text-[#006c48]" title={m.closestDsValue}>
-                                    {varName || m.closestDsValue}
-                                  </span>
-                                </>
-                              )}
-                            </div>
-                            )
-                          })}
-                          {hg5Coverage.colors.mismatches.length > 20 && (
-                            <button
-                              onClick={() => setShowAllMismatches(!showAllMismatches)}
-                              className="text-xs font-medium text-[#006c48] hover:text-[#004d33] self-center px-2 py-1 rounded hover:bg-[#e0f5ec] transition-colors cursor-pointer"
-                            >
-                              {showAllMismatches
-                                ? 'Ver menos'
-                                : `+${hg5Coverage.colors.mismatches.length - 20} mas`}
-                            </button>
-                          )}
-                        </div>
-                      </Card>
-                    )}
-
-                    {/* HG5 Tokens Summary */}
-                    <Card className="p-4 bg-[#f8f9fa]">
-                      <p className="text-xs text-[#3d5a4a]">
-                        <strong>HolyGrail5</strong> contiene {hg5Tokens.colors.length} colores, {hg5Tokens.fontSizes.length} font-sizes, {hg5Tokens.spacing.length} espaciados y {hg5Tokens.zIndex.length} z-index definidos como tokens.
-                      </p>
-                    </Card>
-                  </div>
-                ) : null}
-              </div>
-
-              {/* ══════════════════════════════════════════════════════════════
-                   SECTION 3 — Evolution Charts
-                 ══════════════════════════════════════════════════════════════ */}
-              <div>
-                <SectionHeader title="Evolucion" tooltip="Graficos que muestran como han cambiado los KPIs de tu CSS a lo largo de los escaneos. Te ayuda a detectar tendencias y regresiones." />
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                  {/* Weight & Lines */}
-                  <Card className="p-6">
-                    <div className="flex items-center gap-1.5 mb-3">
-                      <h3 className="text-sm font-semibold text-[#1a2e23]">Peso y Lineas</h3>
-                      <InfoTooltip text="Evolucion del tamano del archivo (KB) y numero de lineas. Un CSS que crece sin control puede afectar el rendimiento." />
-                    </div>
-                    <ResponsiveContainer width="100%" height={250}>
-                      <LineChart data={weightChartData}>
+                    <ResponsiveContainer width="100%" height={280}>
+                      <LineChart data={healthScoreChartData}>
+                        <defs>
+                          <linearGradient id="healthLine" x1="0" y1="0" x2="1" y2="0">
+                            <stop offset="0%" stopColor="#9e2b25" />
+                            <stop offset="50%" stopColor="#a67c00" />
+                            <stop offset="100%" stopColor="#006c48" />
+                          </linearGradient>
+                        </defs>
                         <CartesianGrid strokeDasharray="3 3" stroke="#f0f2f1" />
-                        <XAxis dataKey="date" tick={{ fontSize: 11 }} />
-                        <YAxis yAxisId="left" tick={{ fontSize: 11 }} />
-                        <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 11 }} />
-                        <Tooltip />
-                        <Legend />
-                        <Line yAxisId="left" type="monotone" dataKey="peso" stroke="#012d1d" strokeWidth={2} name="Peso (KB)" />
-                        <Line yAxisId="right" type="monotone" dataKey="lineas" stroke="#5cc49a" strokeWidth={2} name="Lineas" />
+                        <XAxis dataKey="date" tick={{ fontSize: 12 }} tickLine={false} axisLine={false} />
+                        <YAxis domain={[0, 100]} tick={{ fontSize: 12 }} tickLine={false} axisLine={false} />
+                        <Tooltip
+                          contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 4px 20px rgba(0,0,0,0.08)' }}
+                          formatter={(value) => [`${value} / 100`, 'Health Score']}
+                        />
+                        <Line
+                          type="monotone"
+                          dataKey="score"
+                          stroke="#006c48"
+                          strokeWidth={3}
+                          dot={{ fill: '#006c48', strokeWidth: 2, r: 5 }}
+                          activeDot={{ r: 7, fill: '#006c48', stroke: '#fff', strokeWidth: 2 }}
+                          name="Health Score"
+                        />
                       </LineChart>
                     </ResponsiveContainer>
                   </Card>
 
-                  {/* Selectors & Declarations */}
-                  <Card className="p-6">
-                    <div className="flex items-center gap-1.5 mb-3">
-                      <h3 className="text-sm font-semibold text-[#1a2e23]">Selectores y Declaraciones</h3>
-                      <InfoTooltip text="Cantidad de reglas CSS (selectores) y propiedades escritas (declaraciones). La linea 'Unicas' muestra cuantas no se repiten." />
+                  {/* Metrics Cards */}
+                  <div>
+                    <SectionHeader title="Metricas del ultimo escaneo" tooltip="Resumen de los KPIs clave del ultimo analisis CSS. Las flechas muestran la diferencia con el escaneo anterior." />
+                    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
+                      <MetricCard icon={FileText} label="Peso" value={(latestScan.file_size / 1024).toFixed(1)} unit="KB" delta={previousScan ? +((latestScan.file_size - previousScan.file_size) / 1024).toFixed(1) : null} invertDelta tooltip="Tamano del archivo CSS en kilobytes. Un CSS mas ligero mejora el rendimiento de carga de la pagina." />
+                      <MetricCard icon={Ruler} label="Lineas" value={latestScan.line_count.toLocaleString()} color="#2a9d6e" delta={getDelta(latestScan.line_count, previousScan?.line_count)} invertDelta tooltip="Total de lineas de codigo en el archivo CSS. Menos lineas = CSS mas facil de mantener." />
+                      <MetricCard icon={Hash} label="Clases" value={latestScan.class_count.toLocaleString()} color="#006c48" delta={getDelta(latestScan.class_count, previousScan?.class_count)} tooltip="Selectores de clase (.nombre) usados. Las clases son la forma recomendada de aplicar estilos." />
+                      <MetricCard icon={AtSign} label="IDs" value={latestScan.id_count.toLocaleString()} color="#a67c00" delta={getDelta(latestScan.id_count, previousScan?.id_count)} invertDelta tooltip="Selectores de ID (#nombre). Tienen alta especificidad y dificultan la reutilizacion. Evitalos en CSS." />
+                      <MetricCard icon={AlertTriangle} label="!important" value={latestScan.important_count.toLocaleString()} color="#9e2b25" delta={getDelta(latestScan.important_count, previousScan?.important_count)} invertDelta tooltip="Veces que se usa !important para forzar prioridad. Indica problemas de especificidad y dificulta el mantenimiento." />
+                      <MetricCard icon={Variable} label="Variables CSS" value={latestScan.variable_count.toLocaleString()} color="#2a9d6e" delta={getDelta(latestScan.variable_count, previousScan?.variable_count)} tooltip="Custom properties (--var) definidas. Usar variables mejora la consistencia y facilita cambios globales." />
+                      <MetricCard icon={Layers} label="Selectores" value={latestScan.total_selectors.toLocaleString()} delta={getDelta(latestScan.total_selectors, previousScan?.total_selectors)} invertDelta tooltip="Total de reglas CSS definidas. Cada selector aplica estilos a uno o mas elementos del DOM." />
+                      <MetricCard icon={FileCode} label="Declaraciones" value={latestScan.total_declarations.toLocaleString()} delta={getDelta(latestScan.total_declarations, previousScan?.total_declarations)} invertDelta tooltip="Total de propiedades CSS escritas (ej. color: red). Incluye repetidas." />
+                      <MetricCard icon={Copy} label="Unicas" value={latestScan.unique_declarations.toLocaleString()} color="#5cc49a" delta={getDelta(latestScan.unique_declarations, previousScan?.unique_declarations)} invertDelta tooltip="Declaraciones no repetidas. La diferencia con el total indica cuanta duplicacion hay en tu CSS." />
+                      <MetricCard icon={Recycle} label="Ratio reutilizacion" value={(latestScan.reuse_ratio * 100).toFixed(1)} unit="%" color={latestScan.reuse_ratio >= 0.5 ? '#006c48' : '#9e2b25'} delta={previousScan ? +((latestScan.reuse_ratio - previousScan.reuse_ratio) * 100).toFixed(1) : null} tooltip="Porcentaje de declaraciones repetidas vs unicas. Un ratio alto indica CSS eficiente con buena reutilizacion de estilos." />
                     </div>
-                    <ResponsiveContainer width="100%" height={250}>
-                      <AreaChart data={selectorsChartData}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#f0f2f1" />
-                        <XAxis dataKey="date" tick={{ fontSize: 11 }} />
-                        <YAxis tick={{ fontSize: 11 }} />
-                        <Tooltip />
-                        <Legend />
-                        <Area type="monotone" dataKey="selectores" stroke="#012d1d" fill="rgba(1,45,29,0.1)" strokeWidth={2} name="Selectores" />
-                        <Area type="monotone" dataKey="declaraciones" stroke="#006c48" fill="rgba(0,108,72,0.1)" strokeWidth={2} name="Declaraciones" />
-                        <Area type="monotone" dataKey="unicas" stroke="#5cc49a" fill="rgba(92,196,154,0.1)" strokeWidth={2} name="Unicas" />
-                      </AreaChart>
-                    </ResponsiveContainer>
-                  </Card>
-
-                  {/* !important & IDs */}
-                  <Card className="p-6">
-                    <div className="flex items-center gap-1.5 mb-3">
-                      <h3 className="text-sm font-semibold text-[#1a2e23]">!important e IDs</h3>
-                      <InfoTooltip text="Indicadores de problemas de especificidad. Menos !important e IDs = CSS mas facil de mantener y predecible." />
-                    </div>
-                    <ResponsiveContainer width="100%" height={250}>
-                      <BarChart data={issuesChartData}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#f0f2f1" />
-                        <XAxis dataKey="date" tick={{ fontSize: 11 }} />
-                        <YAxis tick={{ fontSize: 11 }} />
-                        <Tooltip />
-                        <Legend />
-                        <Bar dataKey="!important" fill="#9e2b25" radius={[4, 4, 0, 0]} name="!important" />
-                        <Bar dataKey="IDs" fill="#a67c00" radius={[4, 4, 0, 0]} name="IDs" />
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </Card>
-
-                  {/* Reuse Ratio */}
-                  <Card className="p-6">
-                    <div className="flex items-center gap-1.5 mb-3">
-                      <h3 className="text-sm font-semibold text-[#1a2e23]">Ratio de Reutilizacion</h3>
-                      <InfoTooltip text="Porcentaje de declaraciones que se repiten. Un ratio alto significa CSS eficiente con estilos compartidos entre componentes." />
-                    </div>
-                    <ResponsiveContainer width="100%" height={250}>
-                      <AreaChart data={reuseChartData}>
-                        <defs>
-                          <linearGradient id="reuseGrad" x1="0" y1="0" x2="0" y2="1">
-                            <stop offset="5%" stopColor="#2a9d6e" stopOpacity={0.2} />
-                            <stop offset="95%" stopColor="#2a9d6e" stopOpacity={0} />
-                          </linearGradient>
-                        </defs>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#f0f2f1" />
-                        <XAxis dataKey="date" tick={{ fontSize: 11 }} />
-                        <YAxis domain={[0, 100]} tick={{ fontSize: 11 }} unit="%" />
-                        <Tooltip formatter={(v) => `${v}%`} />
-                        <Area type="monotone" dataKey="ratio" stroke="#2a9d6e" strokeWidth={2} fill="url(#reuseGrad)" name="Reutilizacion" />
-                      </AreaChart>
-                    </ResponsiveContainer>
-                  </Card>
-
-                  {/* Composition Bar */}
-                  <Card className="p-6">
-                    <div className="flex items-center gap-1.5 mb-3">
-                      <h3 className="text-sm font-semibold text-[#1a2e23]">Composicion del CSS</h3>
-                      <InfoTooltip text="Distribucion de los tipos de selectores y propiedades en tu CSS. Idealmente, las clases dominan y los IDs/!important son minimos." />
-                    </div>
-                    <ResponsiveContainer width="100%" height={250}>
-                      <BarChart data={compositionChartData} layout="vertical">
-                        <CartesianGrid strokeDasharray="3 3" stroke="#f0f2f1" />
-                        <XAxis type="number" tick={{ fontSize: 11 }} />
-                        <YAxis dataKey="name" type="category" tick={{ fontSize: 11 }} width={80} />
-                        <Tooltip />
-                        <Bar dataKey="value" radius={[0, 4, 4, 0]} name="Cantidad">
-                          {compositionChartData.map((entry, index) => (
-                            <rect key={index} fill={entry.fill} />
-                          ))}
-                        </Bar>
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </Card>
-                </div>
-              </div>
-
-              {/* ══════════════════════════════════════════════════════════════
-                   SECTION 4 — Scans History Table
-                 ══════════════════════════════════════════════════════════════ */}
-              <div>
-                <SectionHeader title="Historial de escaneos" tooltip="Tabla con todos los escaneos guardados de este proyecto. Haz clic en el icono de ojo para ver el detalle completo de cada analisis." />
-                <Card className="p-0 overflow-hidden">
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-sm">
-                      <thead>
-                        <tr className="bg-[#f8f9fa]">
-                          <th className="text-left py-3 px-4 font-semibold text-[#1a2e23]">Etiqueta</th>
-                          <th className="text-left py-3 px-4 font-semibold text-[#1a2e23]">Fecha</th>
-                          <th className="text-center py-3 px-4 font-semibold text-[#1a2e23]">Score</th>
-                          <th className="text-right py-3 px-4 font-semibold text-[#1a2e23]">Peso</th>
-                          <th className="text-right py-3 px-4 font-semibold text-[#1a2e23]">Lineas</th>
-                          <th className="text-right py-3 px-4 font-semibold text-[#1a2e23]">Clases</th>
-                          <th className="text-right py-3 px-4 font-semibold text-[#1a2e23]">IDs</th>
-                          <th className="text-right py-3 px-4 font-semibold text-[#1a2e23]">!imp</th>
-                          <th className="text-right py-3 px-4 font-semibold text-[#1a2e23]">Vars</th>
-                          <th className="text-right py-3 px-4 font-semibold text-[#1a2e23]">Select.</th>
-                          <th className="text-right py-3 px-4 font-semibold text-[#1a2e23]">Decl.</th>
-                          <th className="text-right py-3 px-4 font-semibold text-[#1a2e23]">Unicas</th>
-                          <th className="text-right py-3 px-4 font-semibold text-[#1a2e23]">Reuso</th>
-                          <th className="text-center py-3 px-4 font-semibold text-[#1a2e23]">Acciones</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {scans.map((scan) => (
-                          <tr key={scan.id} className="border-t border-[#f0f2f1] hover:bg-[#f8f9fa] transition-colors">
-                            <td className="py-3 px-4 font-medium text-[#1a2e23]">{scan.label}</td>
-                            <td className="py-3 px-4 text-[#3d5a4a]">
-                              {new Date(scan.created_at).toLocaleDateString('es-ES', {
-                                day: '2-digit',
-                                month: 'short',
-                                year: '2-digit',
-                              })}
-                            </td>
-                            <td className="py-3 px-4 text-center">
-                              <Badge className={getHealthScoreBadgeColor(scan.health_score)}>
-                                {scan.health_score}
-                              </Badge>
-                            </td>
-                            <td className="py-3 px-4 text-right text-[#1a2e23]">
-                              {(scan.file_size / 1024).toFixed(1)} KB
-                            </td>
-                            <td className="py-3 px-4 text-right text-[#1a2e23]">{scan.line_count.toLocaleString()}</td>
-                            <td className="py-3 px-4 text-right text-[#1a2e23]">{scan.class_count.toLocaleString()}</td>
-                            <td className="py-3 px-4 text-right text-[#1a2e23]">{scan.id_count.toLocaleString()}</td>
-                            <td className="py-3 px-4 text-right text-[#1a2e23]">{scan.important_count.toLocaleString()}</td>
-                            <td className="py-3 px-4 text-right text-[#1a2e23]">{scan.variable_count.toLocaleString()}</td>
-                            <td className="py-3 px-4 text-right text-[#1a2e23]">{scan.total_selectors.toLocaleString()}</td>
-                            <td className="py-3 px-4 text-right text-[#1a2e23]">{scan.total_declarations.toLocaleString()}</td>
-                            <td className="py-3 px-4 text-right text-[#1a2e23]">{scan.unique_declarations.toLocaleString()}</td>
-                            <td className="py-3 px-4 text-right text-[#1a2e23]">
-                              {(scan.reuse_ratio * 100).toFixed(0)}%
-                            </td>
-                            <td className="py-3 px-4">
-                              <div className="flex gap-2 justify-center">
-                                <button
-                                  onClick={() => setSelectedScanId(scan.id)}
-                                  className="p-1.5 rounded-lg text-[#006c48] hover:bg-[#e0f5ec] transition-colors"
-                                  title="Ver detalle"
-                                >
-                                  <Eye size={16} />
-                                </button>
-                                <button
-                                  onClick={() => handleDeleteScan(scan.id)}
-                                  className="p-1.5 rounded-lg text-[#9e2b25] hover:bg-[#fef2f1] transition-colors"
-                                  title="Eliminar"
-                                >
-                                  <Trash2 size={16} />
-                                </button>
-                              </div>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
                   </div>
-                </Card>
-              </div>
-            </>
+
+                  {/* Typography + Validation + DS Coverage */}
+                  {(() => {
+                    const ad = latestDetail?.analysis_data as AnalysisResult | undefined
+                    const families = ad?.fontFamilies || []
+                    const weights = ad?.fontWeights || []
+                    const sizes = ad?.fontSizes || []
+
+                    const dsCount = families.filter(f => classifyFamily(f.normalized || f.value) === 'ds').reduce((s, f) => s + f.count, 0)
+                    const genericCount = families.filter(f => classifyFamily(f.normalized || f.value) === 'generic').reduce((s, f) => s + f.count, 0)
+                    const eliminateList = families.filter(f => classifyFamily(f.normalized || f.value) === 'eliminate')
+                    const eliminateCount = eliminateList.reduce((s, f) => s + f.count, 0)
+                    const totalFamilyUsages = dsCount + genericCount + eliminateCount
+                    const suissePct = totalFamilyUsages > 0 ? Math.round((dsCount / totalFamilyUsages) * 100) : 0
+
+                    const pieData = [
+                      { name: 'Suisse (DS)', value: dsCount, color: '#006c48' },
+                      { name: 'Genericas', value: genericCount, color: '#a67c00' },
+                      { name: 'A eliminar', value: eliminateCount, color: '#9e2b25' },
+                    ].filter(d => d.value > 0)
+
+                    const w3cVal = latestDetail?.w3c_validation
+
+                    return (
+                      <div className="space-y-6">
+                        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                          {/* Typography Card */}
+                          <Card className="p-6">
+                            <div className="flex items-center gap-2 mb-4">
+                              <Type size={20} className="text-[#006c48]" />
+                              <h3 className="text-lg font-semibold text-[#1a2e23]">Tipografia</h3>
+                              <InfoTooltip text="Resumen tipografico del CSS: familias usadas clasificadas en Design System (Suisse), genericas y a eliminar. Tambien muestra pesos y tamanos de fuente." />
+                            </div>
+
+                            {families.length > 0 ? (
+                              <div className="space-y-4">
+                                <div className="flex items-start gap-4">
+                                  {pieData.length > 0 && (
+                                    <div className="shrink-0">
+                                      <ResponsiveContainer width={90} height={90}>
+                                        <PieChart>
+                                          <Pie data={pieData} dataKey="value" cx="50%" cy="50%" innerRadius={24} outerRadius={42} paddingAngle={2}>
+                                            {pieData.map((d, i) => (
+                                              <Cell key={i} fill={d.color} />
+                                            ))}
+                                          </Pie>
+                                          <Tooltip formatter={(v: any, name: any) => [`${v} usos`, name]} />
+                                        </PieChart>
+                                      </ResponsiveContainer>
+                                    </div>
+                                  )}
+
+                                  <div className="flex-1 space-y-2">
+                                    <div className="flex items-center justify-between">
+                                      <span className="text-xs text-[#3d5a4a]">Cobertura Suisse</span>
+                                      <Badge className={suissePct >= 70 ? 'bg-[#e0f5ec] text-[#006c48]' : suissePct >= 40 ? 'bg-[#fef6e0] text-[#a67c00]' : 'bg-[#fef2f1] text-[#9e2b25]'}>
+                                        {suissePct}%
+                                      </Badge>
+                                    </div>
+                                    <div className="h-1.5 bg-[#f0f2f1] rounded-full overflow-hidden">
+                                      <div className="h-full rounded-full bg-[#006c48] transition-all" style={{ width: `${suissePct}%` }} />
+                                    </div>
+
+                                    <div className="grid grid-cols-3 gap-1.5 pt-1">
+                                      <div className="text-center p-1.5 bg-[#f8f9fa] rounded">
+                                        <p className="text-sm font-bold text-[#1a2e23]">{families.length}</p>
+                                        <p className="text-[9px] text-[#3d5a4a]">Familias</p>
+                                      </div>
+                                      <div className="text-center p-1.5 bg-[#f8f9fa] rounded">
+                                        <p className="text-sm font-bold text-[#1a2e23]">{weights.length}</p>
+                                        <p className="text-[9px] text-[#3d5a4a]">Pesos</p>
+                                      </div>
+                                      <div className="text-center p-1.5 bg-[#f8f9fa] rounded">
+                                        <p className="text-sm font-bold text-[#1a2e23]">{sizes.length}</p>
+                                        <p className="text-[9px] text-[#3d5a4a]">Tamanos</p>
+                                      </div>
+                                    </div>
+                                  </div>
+                                </div>
+
+                                {eliminateList.length > 0 && (
+                                  <div className="flex items-start gap-2 p-2 bg-[#fef2f1] rounded-lg">
+                                    <XCircle size={14} className="text-[#9e2b25] shrink-0 mt-0.5" />
+                                    <div className="min-w-0">
+                                      <p className="text-xs font-semibold text-[#9e2b25]">{eliminateList.length} fuente{eliminateList.length !== 1 ? 's' : ''} a eliminar</p>
+                                      <p className="text-[10px] text-[#9e2b25]/70 truncate">
+                                        {eliminateList.slice(0, 3).map(f => f.value.replace(/['"]/g, '')).join(', ')}
+                                        {eliminateList.length > 3 ? ` +${eliminateList.length - 3}` : ''}
+                                      </p>
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            ) : (
+                              <p className="text-sm text-[#3d5a4a]">Sin datos tipograficos en este escaneo.</p>
+                            )}
+                          </Card>
+
+                          {/* CSS Validation Card */}
+                          <Card className="p-6">
+                            <div className="flex items-center gap-2 mb-4">
+                              <ShieldCheck size={20} className="text-[#006c48]" />
+                              <h3 className="text-lg font-semibold text-[#1a2e23]">Validacion CSS</h3>
+                              <InfoTooltip text="Errores y warnings detectados por el validador. Errores = sintaxis invalida o propiedades desconocidas; warnings = !important, vendor prefixes, reglas vacias." />
+                            </div>
+
+                            {w3cVal ? (
+                              <div className="space-y-3">
+                                <div className="flex items-center gap-3">
+                                  {w3cVal.valid ? (
+                                    <Badge className="gap-1.5 bg-[#e0f5ec] text-[#006c48]">
+                                      <CheckCircle size={12} />
+                                      CSS Valido
+                                    </Badge>
+                                  ) : (
+                                    <Badge className="gap-1.5 bg-[#fef2f1] text-[#9e2b25]">
+                                      <XCircle size={12} />
+                                      Con errores
+                                    </Badge>
+                                  )}
+                                </div>
+
+                                <div className="grid grid-cols-2 gap-3">
+                                  <div className="text-center p-3 rounded-xl bg-[#fef2f1]/50">
+                                    <p className="text-2xl font-bold text-[#9e2b25]">{w3cVal.errorCount}</p>
+                                    <p className="text-[10px] text-[#3d5a4a]">Errores</p>
+                                  </div>
+                                  <div className="text-center p-3 rounded-xl bg-[#fef6e0]/50">
+                                    <p className="text-2xl font-bold text-[#a67c00]">{w3cVal.warningCount}</p>
+                                    <p className="text-[10px] text-[#3d5a4a]">Warnings</p>
+                                  </div>
+                                </div>
+
+                                {w3cVal.errors && w3cVal.errors.length > 0 && (
+                                  <div className="space-y-1 max-h-24 overflow-y-auto">
+                                    {w3cVal.errors.slice(0, 3).map((err: string, i: number) => (
+                                      <p key={i} className="text-[10px] text-[#9e2b25] bg-[#fef2f1] rounded px-2 py-1 truncate">
+                                        {err}
+                                      </p>
+                                    ))}
+                                    {w3cVal.errors.length > 3 && (
+                                      <p className="text-[10px] text-[#3d5a4a]">+{w3cVal.errors.length - 3} mas...</p>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            ) : (
+                              <div className="text-center py-6">
+                                <ShieldCheck size={28} className="mx-auto mb-2 text-[#3d5a4a]/20" />
+                                <p className="text-xs text-[#3d5a4a]">Sin datos. Ejecuta la validacion desde "Analizar".</p>
+                              </div>
+                            )}
+                          </Card>
+
+                          {/* Design System Coverage */}
+                          <Card className="p-6">
+                            <div className="flex items-center gap-2 mb-4">
+                              <Palette size={20} className="text-[#006c48]" />
+                              <h3 className="text-lg font-semibold text-[#1a2e23]">Cobertura DS</h3>
+                              <InfoTooltip text="Porcentaje de valores en tu CSS (colores, tipografia, spacing, z-index) que coinciden con los tokens de tu Design System. 100% = todo alineado." />
+                            </div>
+                            {latestDetail?.ds_coverage ? (
+                              <div className="space-y-3">
+                                <div className="flex items-center gap-4">
+                                  <ScoreRing score={Math.round(latestDetail.ds_coverage.overallCoverage)} size={80} />
+                                  <div className="flex-1 space-y-2">
+                                    <CoverageBar label="Colores" value={latestDetail.ds_coverage.colors} color="#006c48" />
+                                    <CoverageBar label="Tipografia" value={latestDetail.ds_coverage.fontSizes} color="#2a9d6e" />
+                                    <CoverageBar label="Spacing" value={latestDetail.ds_coverage.spacing} color="#5cc49a" />
+                                    <CoverageBar label="Z-index" value={latestDetail.ds_coverage.zIndex} color="#a67c00" />
+                                  </div>
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="text-center py-6">
+                                <Palette size={28} className="mx-auto mb-2 text-[#3d5a4a]/20" />
+                                <p className="text-xs text-[#3d5a4a]">Sin datos. Carga tus tokens DS desde "Analizar".</p>
+                              </div>
+                            )}
+                          </Card>
+                        </div>
+                      </div>
+                    )
+                  })()}
+                  {/* ── Hardcoded Detail Cards ── */}
+                  {(() => {
+                    const ad = latestDetail?.analysis_data as AnalysisResult | undefined
+                    if (!ad) return null
+
+                    const topColors = [...(ad.colors || [])].sort((a, b) => b.count - a.count).slice(0, 15)
+                    const spacingPx = (ad.spacingValues || []).filter(sv => /px$/i.test(sv.normalized) || sv.normalized === '0' || /^\d+$/.test(sv.normalized))
+                    const spacingPct = (ad.spacingValues || []).filter(sv => /%|vw|vh/i.test(sv.normalized))
+                    const spacingOther = (ad.spacingValues || []).filter(sv => /rem|em/i.test(sv.normalized))
+                    const spacingTotal = (ad.spacingValues || []).reduce((s, v) => s + v.count, 0)
+                    const offGrid = spacingPx.filter(sv => { const n = parseFloat(sv.normalized); return !isNaN(n) && n !== 0 && n % 8 !== 0 })
+                    const offGridCount = offGrid.reduce((s, v) => s + v.count, 0)
+
+                    const zTotal = (ad.zIndexValues || []).reduce((s, v) => s + v.count, 0)
+                    const zUnique = (ad.zIndexValues || []).length
+                    const zLayers = new Set((ad.zIndexValues || []).map(z => { const n = parseInt(z.value, 10); return isNaN(n) ? -1 : Math.min(Math.floor(Math.abs(n) / 1000), 9) })).size
+                    const zNegative = (ad.zIndexValues || []).filter(z => parseInt(z.value, 10) < 0)
+                    const zOver9999 = (ad.zIndexValues || []).filter(z => parseInt(z.value, 10) > 9999)
+                    const zOutOfScale = (ad.zIndexValues || []).filter(z => { const n = parseInt(z.value, 10); return !isNaN(n) && (n % 1000 !== 0 && n !== 0 && n !== 1 && n !== -1) })
+
+                    return (
+                      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                        {/* Colores Hardcodeados */}
+                        <Card className="p-6">
+                          <div className="flex items-center gap-2 mb-4">
+                            <Palette size={20} className="text-[#006c48]" />
+                            <h3 className="text-lg font-semibold text-[#1a2e23]">Colores Hardcodeados</h3>
+                            <InfoTooltip text="Colores escritos directamente en el CSS en vez de usar variables del Design System." />
+                          </div>
+                          <p className="text-4xl font-bold text-[#1a2e23] mb-1">{ad.colors?.length || 0}</p>
+                          <p className="text-xs text-[#3d5a4a] mb-4">colores escritos directamente en el CSS</p>
+                          {topColors.length > 0 && (
+                            <div className="flex flex-wrap gap-1.5 mb-2">
+                              {topColors.map((c, i) => (
+                                <div
+                                  key={i}
+                                  className="w-6 h-6 rounded border border-[#f0f2f1]"
+                                  style={{ backgroundColor: c.normalized }}
+                                  title={`${c.normalized} (${c.count}x)`}
+                                />
+                              ))}
+                              {(ad.colors?.length || 0) > 15 && (
+                                <span className="text-[10px] text-[#3d5a4a] self-center ml-1">+{(ad.colors?.length || 0) - 15}</span>
+                              )}
+                            </div>
+                          )}
+                        </Card>
+
+                        {/* Spacing */}
+                        <Card className="p-6">
+                          <div className="flex items-center gap-2 mb-4">
+                            <Grid3X3 size={20} className="text-[#006c48]" />
+                            <h3 className="text-lg font-semibold text-[#1a2e23]">Spacing</h3>
+                            <InfoTooltip text="Valores de spacing (margin, padding, gap, etc.) hardcodeados. Idealmente deberían seguir una escala de 8px." />
+                          </div>
+                          <p className="text-4xl font-bold text-[#1a2e23] mb-1">{spacingTotal}</p>
+                          <p className="text-xs text-[#3d5a4a] mb-4">valores de spacing hardcodeados</p>
+                          <div className="grid grid-cols-3 gap-2 mb-3">
+                            <div className="text-center p-2 bg-[#f8f9fa] rounded-lg">
+                              <p className="text-lg font-bold text-[#1a2e23]">{spacingPx.reduce((s, v) => s + v.count, 0)}</p>
+                              <p className="text-[9px] text-[#3d5a4a]">px</p>
+                            </div>
+                            <div className="text-center p-2 bg-[#f8f9fa] rounded-lg">
+                              <p className="text-lg font-bold text-[#a67c00]">{spacingPct.reduce((s, v) => s + v.count, 0)}</p>
+                              <p className="text-[9px] text-[#3d5a4a]">% / vw / vh</p>
+                            </div>
+                            <div className="text-center p-2 bg-[#f8f9fa] rounded-lg">
+                              <p className="text-lg font-bold text-[#1a2e23]">{spacingOther.reduce((s, v) => s + v.count, 0)}</p>
+                              <p className="text-[9px] text-[#3d5a4a]">rem / em / otro</p>
+                            </div>
+                          </div>
+                          {offGridCount > 0 && (
+                            <div className="flex items-start gap-2 p-2 rounded-lg" style={{ background: '#fef6e0' }}>
+                              <AlertTriangle size={14} className="text-[#a67c00] shrink-0 mt-0.5" />
+                              <div>
+                                <p className="text-xs font-semibold text-[#a67c00]">{offGridCount} px fuera de la grid 8</p>
+                                <p className="text-[10px] text-[#a67c00]/70 truncate">
+                                  {offGrid.slice(0, 5).map(v => v.normalized).join(', ')}
+                                  {offGrid.length > 5 ? ` +${offGrid.length - 5}` : ''}
+                                </p>
+                              </div>
+                            </div>
+                          )}
+                        </Card>
+
+                        {/* Z-index */}
+                        <Card className="p-6">
+                          <div className="flex items-center gap-2 mb-4">
+                            <Layers size={20} className="text-[#006c48]" />
+                            <h3 className="text-lg font-semibold text-[#1a2e23]">Z-index</h3>
+                            <InfoTooltip text="Valores z-index en el CSS. Se recomienda una escala ×1000 con máximo 10 capas." />
+                          </div>
+                          <div className="flex items-baseline gap-2 mb-1">
+                            <p className="text-4xl font-bold text-[#1a2e23]">{zTotal}</p>
+                            <p className="text-xs text-[#3d5a4a]">valores en {zLayers} de 10 capas</p>
+                          </div>
+                          <div className="grid grid-cols-2 gap-2 mb-3 mt-3">
+                            <div className="text-center p-2 bg-[#f8f9fa] rounded-lg">
+                              <p className="text-lg font-bold text-[#1a2e23]">{zLayers}</p>
+                              <p className="text-[9px] text-[#3d5a4a]">capas usadas</p>
+                            </div>
+                            <div className="text-center p-2 bg-[#f8f9fa] rounded-lg">
+                              <p className="text-lg font-bold text-[#1a2e23]">{Math.max(0, 10 - zLayers)}</p>
+                              <p className="text-[9px] text-[#3d5a4a]">capas libres</p>
+                            </div>
+                          </div>
+                          {zOutOfScale.length > 0 && (
+                            <div className="flex items-start gap-2 p-2 rounded-lg mb-1.5" style={{ background: '#fef6e0' }}>
+                              <AlertTriangle size={14} className="text-[#a67c00] shrink-0 mt-0.5" />
+                              <div>
+                                <p className="text-xs font-semibold text-[#a67c00]">{zOutOfScale.length} fuera de la escala ×1000</p>
+                                <p className="text-[10px] text-[#a67c00]/70 truncate">
+                                  {zOutOfScale.slice(0, 5).map(v => v.value).join(', ')}
+                                  {zOutOfScale.length > 5 ? ` +${zOutOfScale.length - 5}` : ''}
+                                </p>
+                              </div>
+                            </div>
+                          )}
+                          {zOver9999.length > 0 && (
+                            <div className="flex items-center gap-2 p-2 rounded-lg mb-1.5" style={{ background: '#fef6e0' }}>
+                              <AlertTriangle size={14} className="text-[#a67c00]" />
+                              <p className="text-xs font-semibold text-[#a67c00]">{zOver9999.length} valores por encima de 9999</p>
+                            </div>
+                          )}
+                          {zNegative.length > 0 && (
+                            <div className="flex items-center gap-2 p-2 rounded-lg" style={{ background: '#fef6e0' }}>
+                              <AlertTriangle size={14} className="text-[#a67c00]" />
+                              <p className="text-xs font-semibold text-[#a67c00]">{zNegative.length} valores negativos</p>
+                            </div>
+                          )}
+                        </Card>
+                      </div>
+                    )
+                  })()}
+
+                  {/* ── Font Weights ── */}
+                  {(() => {
+                    const ad = latestDetail?.analysis_data as AnalysisResult | undefined
+                    const weights = ad?.fontWeights || []
+                    if (weights.length === 0) return null
+
+                    const APPROVED_WEIGHTS = [100, 400, 600, 700]
+                    const WEIGHT_NAMES: Record<number, string> = { 100: 'Thin', 200: 'Extra Light', 300: 'Light', 400: 'Normal', 500: 'Medium', 600: 'Semi Bold', 700: 'Bold', 800: 'Extra Bold', 900: 'Black' }
+                    const sortedWeights = [...weights].sort((a, b) => (parseInt(a.normalized) || 0) - (parseInt(b.normalized) || 0))
+                    const approvedWeights = sortedWeights.filter(w => APPROVED_WEIGHTS.includes(parseInt(w.normalized) || 0))
+                    const unapproved = sortedWeights.filter(w => !APPROVED_WEIGHTS.includes(parseInt(w.normalized) || 0))
+                    const CONSOLIDATION: Record<number, number> = { 200: 100, 300: 100, 500: 400, 800: 700, 900: 700 }
+
+                    return (
+                      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        {/* Weight list */}
+                        <Card className="p-6">
+                          <div className="flex items-center gap-2 mb-4">
+                            <Type size={20} className="text-[#006c48]" />
+                            <h3 className="text-lg font-semibold text-[#1a2e23]">Font-Weights y Equivalencias</h3>
+                            <InfoTooltip text="Distribución de font-weight. Los pesos aprobados del DS son 100, 400, 600 y 700." />
+                          </div>
+                          <div className="space-y-2">
+                            {sortedWeights.map((w, i) => {
+                              const n = parseInt(w.normalized) || 0
+                              const isApproved = APPROVED_WEIGHTS.includes(n)
+                              return (
+                                <div key={i} className="flex items-center gap-3 p-3 rounded-xl border" style={{ borderColor: isApproved ? 'rgba(0, 108, 72, 0.15)' : 'rgba(158, 43, 37, 0.15)' }}>
+                                  <span className="text-[11px] font-bold px-2 py-1 rounded" style={{
+                                    background: isApproved ? '#e0f5ec' : '#fef2f1',
+                                    color: isApproved ? '#006c48' : '#9e2b25',
+                                  }}>{w.normalized}</span>
+                                  <span className="flex-1 text-sm font-medium text-[#1a2e23]" style={{ fontWeight: n }}>
+                                    {WEIGHT_NAMES[n] || w.normalized}
+                                  </span>
+                                  <span className="text-[10px] text-[#3d5a4a]">{w.normalized} {w.count}x</span>
+                                  <span className="text-lg font-bold text-[#1a2e23]">{w.count}</span>
+                                  <span className="text-[10px] text-[#3d5a4a]">usos</span>
+                                </div>
+                              )
+                            })}
+                          </div>
+                        </Card>
+
+                        {/* Consolidation actions */}
+                        <Card className="p-6">
+                          <div className="flex items-center gap-2 mb-4">
+                            <Type size={20} className="text-[#006c48]" />
+                            <h3 className="text-lg font-semibold text-[#1a2e23]">Acciones de Font-Weight</h3>
+                            <InfoTooltip text="Pesos no aprobados que deben consolidarse en pesos del DS. Cada acción indica a qué peso migrar." />
+                          </div>
+                          {unapproved.length > 0 ? (
+                            <>
+                              <p className="text-sm text-[#a67c00] mb-4">{unapproved.length} acciones pendientes</p>
+                              <div className="space-y-3">
+                                {unapproved.map((w, i) => {
+                                  const n = parseInt(w.normalized) || 0
+                                  const target = CONSOLIDATION[n] || 400
+                                  return (
+                                    <div key={i} className="p-4 rounded-xl border" style={{ borderColor: 'rgba(166, 124, 0, 0.15)' }}>
+                                      <div className="flex items-center gap-2 mb-2">
+                                        <span className="text-[11px] font-bold px-2 py-1 rounded line-through" style={{ background: '#fef2f1', color: '#9e2b25' }}>{w.normalized}</span>
+                                        <span className="text-sm font-semibold text-[#1a2e23]">{WEIGHT_NAMES[n] || w.normalized}</span>
+                                        <span className="text-xs text-[#3d5a4a]">({w.count} usos)</span>
+                                      </div>
+                                      <div className="flex items-center gap-2 text-xs">
+                                        <span className="text-[#006c48] font-medium">Consolidar</span>
+                                        <span className="text-[#3d5a4a]">→</span>
+                                        <span className="text-[11px] font-bold px-2 py-1 rounded" style={{ background: '#e0f5ec', color: '#006c48' }}>{target}</span>
+                                        <span className="text-sm text-[#1a2e23]">{WEIGHT_NAMES[target]}</span>
+                                      </div>
+                                    </div>
+                                  )
+                                })}
+                              </div>
+                              {approvedWeights.length > 0 && (
+                                <div className="mt-5 pt-4 border-t border-[#f0f2f1]">
+                                  <p className="text-[10px] uppercase tracking-wider font-semibold text-[#3d5a4a] mb-2">Pesos correctos</p>
+                                  <div className="flex flex-wrap gap-2">
+                                    {approvedWeights.map((w, i) => (
+                                      <span key={i} className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs" style={{ background: '#e0f5ec', color: '#006c48' }}>
+                                        <span className="font-bold">{w.normalized}</span>
+                                        <span>{WEIGHT_NAMES[parseInt(w.normalized) || 0]}</span>
+                                        <span className="text-[10px] opacity-70">{w.count}x</span>
+                                      </span>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                            </>
+                          ) : (
+                            <div className="text-center py-8">
+                              <CheckCircle size={32} className="mx-auto mb-2 text-[#006c48]" />
+                              <p className="text-sm font-medium text-[#006c48]">Todos los pesos son correctos</p>
+                            </div>
+                          )}
+                        </Card>
+                      </div>
+                    )
+                  })()}
+
+                  {/* ── Cumplimiento HG5 (Evolution) ── */}
+                  {hg5Result && hg5EvolutionData && scans.length > 0 && (
+                    <>
+                      <SectionHeader title="Cumplimiento HG5" tooltip="Evolución de la adherencia de tu CSS al framework HG5 a lo largo de los escaneos. Las líneas punteadas representan los valores de referencia de HG5." />
+
+                      {/* Compliance score over time */}
+                      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        <Card className="p-6">
+                          <ChartTitle
+                            title="Indice de Cumplimiento"
+                            tooltip="Porcentaje de métricas que cumplen o mejoran respecto a HG5. 100% = adherencia total."
+                            first={hg5EvolutionData[0]?.cumplimiento}
+                            last={hg5EvolutionData[hg5EvolutionData.length - 1]?.cumplimiento}
+                            downIsGood={false}
+                          />
+                          <ResponsiveContainer width="100%" height={250}>
+                            <AreaChart data={hg5EvolutionData}>
+                              <defs>
+                                <linearGradient id="compFill" x1="0" y1="0" x2="0" y2="1">
+                                  <stop offset="5%" stopColor="#006c48" stopOpacity={0.2} />
+                                  <stop offset="95%" stopColor="#006c48" stopOpacity={0} />
+                                </linearGradient>
+                              </defs>
+                              <CartesianGrid strokeDasharray="3 3" stroke="#f0f2f1" />
+                              <XAxis dataKey="date" tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
+                              <YAxis tick={{ fontSize: 11 }} tickLine={false} axisLine={false} domain={[0, 100]} tickFormatter={(v) => `${v}%`} />
+                              <Tooltip contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.08)' }} formatter={(v: any) => [`${v}%`, 'Cumplimiento']} />
+                              <ReferenceLine y={100} stroke="#006c48" strokeDasharray="6 3" strokeOpacity={0.3} label={{ value: 'HG5 100%', position: 'right', fontSize: 10, fill: '#006c48' }} />
+                              <Area type="monotone" dataKey="cumplimiento" stroke="#006c48" strokeWidth={2.5} fill="url(#compFill)" dot={{ r: 4, fill: '#006c48' }} />
+                            </AreaChart>
+                          </ResponsiveContainer>
+                        </Card>
+
+                        {/* Health Score: User vs HG5 */}
+                        <Card className="p-6">
+                          <ChartTitle
+                            title="Health Score vs HG5"
+                            tooltip="Tu Health Score comparado con el de HG5 en cada escaneo. El objetivo es igualarlo o superarlo."
+                            first={hg5EvolutionData[0]?.scoreUser}
+                            last={hg5EvolutionData[hg5EvolutionData.length - 1]?.scoreUser}
+                            downIsGood={false}
+                          />
+                          <ResponsiveContainer width="100%" height={250}>
+                            <LineChart data={hg5EvolutionData}>
+                              <CartesianGrid strokeDasharray="3 3" stroke="#f0f2f1" />
+                              <XAxis dataKey="date" tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
+                              <YAxis tick={{ fontSize: 11 }} tickLine={false} axisLine={false} domain={[0, 100]} />
+                              <Tooltip contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.08)' }} />
+                              <Legend />
+                              <ReferenceLine y={hg5Result.healthScore} stroke="#006c48" strokeDasharray="6 3" strokeOpacity={0.4} label={{ value: `HG5: ${hg5Result.healthScore}`, position: 'right', fontSize: 10, fill: '#006c48' }} />
+                              <Line type="monotone" dataKey="scoreUser" stroke="#1a2e23" strokeWidth={2.5} dot={{ r: 4, fill: '#1a2e23' }} name="Tu Score" />
+                            </LineChart>
+                          </ResponsiveContainer>
+                        </Card>
+                      </div>
+
+                      {/* Key metrics vs HG5 reference */}
+                      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        {/* Colores hardcodeados vs HG5 */}
+                        <Card className="p-6">
+                          <ChartTitle
+                            title="Colores vs HG5"
+                            tooltip="Tus colores hardcodeados comparados con los de HG5. Idealmente debería acercarse o bajar de la referencia."
+                            first={hg5EvolutionData[0]?.coloresUser}
+                            last={hg5EvolutionData[hg5EvolutionData.length - 1]?.coloresUser}
+                          />
+                          <ResponsiveContainer width="100%" height={220}>
+                            <LineChart data={hg5EvolutionData}>
+                              <CartesianGrid strokeDasharray="3 3" stroke="#f0f2f1" />
+                              <XAxis dataKey="date" tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
+                              <YAxis tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
+                              <Tooltip contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.08)' }} />
+                              <ReferenceLine y={hg5Result.colors.length} stroke="#006c48" strokeDasharray="6 3" strokeOpacity={0.4} label={{ value: `HG5: ${hg5Result.colors.length}`, position: 'right', fontSize: 10, fill: '#006c48' }} />
+                              <Line type="monotone" dataKey="coloresUser" stroke="#9e2b25" strokeWidth={2} dot={{ r: 3, fill: '#9e2b25' }} name="Tus colores" />
+                            </LineChart>
+                          </ResponsiveContainer>
+                        </Card>
+
+                        {/* !important vs HG5 */}
+                        <Card className="p-6">
+                          <ChartTitle
+                            title="!important vs HG5"
+                            tooltip="Usos de !important en tu CSS comparados con HG5. Menos = mejor."
+                            first={hg5EvolutionData[0]?.importantUser}
+                            last={hg5EvolutionData[hg5EvolutionData.length - 1]?.importantUser}
+                          />
+                          <ResponsiveContainer width="100%" height={220}>
+                            <LineChart data={hg5EvolutionData}>
+                              <CartesianGrid strokeDasharray="3 3" stroke="#f0f2f1" />
+                              <XAxis dataKey="date" tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
+                              <YAxis tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
+                              <Tooltip contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.08)' }} />
+                              <ReferenceLine y={hg5Result.importantCount} stroke="#006c48" strokeDasharray="6 3" strokeOpacity={0.4} label={{ value: `HG5: ${hg5Result.importantCount}`, position: 'right', fontSize: 10, fill: '#006c48' }} />
+                              <Line type="monotone" dataKey="importantUser" stroke="#9e2b25" strokeWidth={2} dot={{ r: 3, fill: '#9e2b25' }} name="Tu !important" />
+                            </LineChart>
+                          </ResponsiveContainer>
+                        </Card>
+                      </div>
+
+                      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        {/* Fuentes a eliminar (objetivo: 0) */}
+                        <Card className="p-6">
+                          <ChartTitle
+                            title="Fuentes no autorizadas"
+                            tooltip="Fuentes que no son Suisse ni genéricas. El objetivo es llegar a 0."
+                            first={hg5EvolutionData[0]?.badFonts}
+                            last={hg5EvolutionData[hg5EvolutionData.length - 1]?.badFonts}
+                          />
+                          <ResponsiveContainer width="100%" height={220}>
+                            <LineChart data={hg5EvolutionData}>
+                              <CartesianGrid strokeDasharray="3 3" stroke="#f0f2f1" />
+                              <XAxis dataKey="date" tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
+                              <YAxis tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
+                              <Tooltip contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.08)' }} />
+                              <ReferenceLine y={0} stroke="#006c48" strokeDasharray="6 3" strokeOpacity={0.4} label={{ value: 'Objetivo: 0', position: 'right', fontSize: 10, fill: '#006c48' }} />
+                              <Line type="monotone" dataKey="badFonts" stroke="#a67c00" strokeWidth={2} dot={{ r: 3, fill: '#a67c00' }} name="Fuentes" />
+                            </LineChart>
+                          </ResponsiveContainer>
+                        </Card>
+
+                        {/* Ratio reutilización vs HG5 */}
+                        <Card className="p-6">
+                          <ChartTitle
+                            title="Reutilización vs HG5"
+                            tooltip="Tu ratio de reutilización comparado con HG5. Mayor = mejor."
+                            first={hg5EvolutionData[0]?.reuseUser}
+                            last={hg5EvolutionData[hg5EvolutionData.length - 1]?.reuseUser}
+                            downIsGood={false}
+                          />
+                          <ResponsiveContainer width="100%" height={220}>
+                            <LineChart data={hg5EvolutionData}>
+                              <CartesianGrid strokeDasharray="3 3" stroke="#f0f2f1" />
+                              <XAxis dataKey="date" tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
+                              <YAxis tick={{ fontSize: 11 }} tickLine={false} axisLine={false} domain={[0, 100]} tickFormatter={(v) => `${v}%`} />
+                              <Tooltip contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.08)' }} formatter={(v: any) => [`${v}%`, 'Ratio']} />
+                              <ReferenceLine y={+(hg5Result.reuseRatio * 100).toFixed(1)} stroke="#006c48" strokeDasharray="6 3" strokeOpacity={0.4} label={{ value: `HG5: ${(hg5Result.reuseRatio * 100).toFixed(0)}%`, position: 'right', fontSize: 10, fill: '#006c48' }} />
+                              <Line type="monotone" dataKey="reuseUser" stroke="#006c48" strokeWidth={2} dot={{ r: 3, fill: '#006c48' }} name="Tu ratio" />
+                            </LineChart>
+                          </ResponsiveContainer>
+                        </Card>
+                      </div>
+                    </>
+                  )}
+
+                  {/* ── Reduccion de Legacy ── */}
+                  {scans.length > 1 && (
+                    <>
+                      <SectionHeader title="Reduccion de Legacy" tooltip="Seguimiento de valores legacy (hardcodeados, fuentes no autorizadas) a lo largo de los escaneos. El objetivo es llevarlos a cero." />
+                      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        <Card className="p-6">
+                          <ChartTitle
+                            title="Colores Hardcodeados"
+                            tooltip="Cantidad de colores escritos directamente en el CSS a lo largo de los escaneos."
+                            first={hardcodedColorsChartData[0]?.colores}
+                            last={hardcodedColorsChartData[hardcodedColorsChartData.length - 1]?.colores}
+                          />
+                          <ResponsiveContainer width="100%" height={220}>
+                            <LineChart data={hardcodedColorsChartData}>
+                              <CartesianGrid strokeDasharray="3 3" stroke="#f0f2f1" />
+                              <XAxis dataKey="date" tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
+                              <YAxis tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
+                              <Tooltip contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.08)' }} />
+                              <Line type="monotone" dataKey="colores" stroke="#9e2b25" strokeWidth={2} dot={{ r: 3, fill: '#9e2b25' }} name="Colores" fill="#9e2b25" />
+                              <defs>
+                                <linearGradient id="colorsFill" x1="0" y1="0" x2="0" y2="1">
+                                  <stop offset="5%" stopColor="#9e2b25" stopOpacity={0.15} />
+                                  <stop offset="95%" stopColor="#9e2b25" stopOpacity={0} />
+                                </linearGradient>
+                              </defs>
+                            </LineChart>
+                          </ResponsiveContainer>
+                        </Card>
+
+                        <Card className="p-6">
+                          <ChartTitle
+                            title="Fuentes a Eliminar"
+                            tooltip="Usos de fuentes no autorizadas (no Suisse ni genéricas) a lo largo de los escaneos."
+                            first={fontsToEliminateChartData[0]?.fuentes}
+                            last={fontsToEliminateChartData[fontsToEliminateChartData.length - 1]?.fuentes}
+                          />
+                          <ResponsiveContainer width="100%" height={220}>
+                            <LineChart data={fontsToEliminateChartData}>
+                              <CartesianGrid strokeDasharray="3 3" stroke="#f0f2f1" />
+                              <XAxis dataKey="date" tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
+                              <YAxis tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
+                              <Tooltip contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.08)' }} />
+                              <Line type="monotone" dataKey="fuentes" stroke="#a67c00" strokeWidth={2} dot={{ r: 3, fill: '#a67c00' }} name="Fuentes" />
+                            </LineChart>
+                          </ResponsiveContainer>
+                        </Card>
+                      </div>
+                    </>
+                  )}
+
+                  {/* ── Evolucion ── */}
+                  {scans.length > 1 && (
+                    <>
+                      <SectionHeader title="Evolucion" tooltip="Evolución de las métricas principales del CSS a lo largo de los escaneos." />
+
+                      {/* Peso y Lineas */}
+                      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        <Card className="p-6">
+                          <ChartTitle
+                            title="Peso y Lineas"
+                            tooltip="Histórico del tamaño del archivo CSS (en KB) y número de líneas de código."
+                            first={weightChartData[0]?.peso}
+                            last={weightChartData[weightChartData.length - 1]?.peso}
+                          />
+                          <ResponsiveContainer width="100%" height={250}>
+                            <LineChart data={weightChartData}>
+                              <CartesianGrid strokeDasharray="3 3" stroke="#f0f2f1" />
+                              <XAxis dataKey="date" tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
+                              <YAxis yAxisId="left" tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
+                              <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
+                              <Tooltip contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.08)' }} />
+                              <Legend />
+                              <Line yAxisId="right" type="monotone" dataKey="lineas" stroke="#006c48" strokeWidth={2} dot={{ r: 3 }} name="Lineas" />
+                              <Line yAxisId="left" type="monotone" dataKey="peso" stroke="#1a2e23" strokeWidth={2} dot={{ r: 3 }} name="Peso (KB)" />
+                            </LineChart>
+                          </ResponsiveContainer>
+                        </Card>
+
+                        {/* Selectores y Declaraciones */}
+                        <Card className="p-6">
+                          <ChartTitle
+                            title="Selectores y Declaraciones"
+                            tooltip="Evolución del número total de selectores, declaraciones y declaraciones únicas."
+                            first={selectorsChartData[0]?.declaraciones}
+                            last={selectorsChartData[selectorsChartData.length - 1]?.declaraciones}
+                          />
+                          <ResponsiveContainer width="100%" height={250}>
+                            <LineChart data={selectorsChartData}>
+                              <CartesianGrid strokeDasharray="3 3" stroke="#f0f2f1" />
+                              <XAxis dataKey="date" tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
+                              <YAxis tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
+                              <Tooltip contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.08)' }} />
+                              <Legend />
+                              <Line type="monotone" dataKey="declaraciones" stroke="#006c48" strokeWidth={2} dot={{ r: 3 }} name="Declaraciones" />
+                              <Line type="monotone" dataKey="selectores" stroke="#1a2e23" strokeWidth={2} dot={{ r: 3 }} name="Selectores" />
+                              <Line type="monotone" dataKey="unicas" stroke="#5cc49a" strokeWidth={2} dot={{ r: 3 }} name="Unicas" />
+                            </LineChart>
+                          </ResponsiveContainer>
+                        </Card>
+                      </div>
+
+                      {/* !important e IDs + Ratio de Reutilización */}
+                      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        <Card className="p-6">
+                          <ChartTitle
+                            title="!important e IDs"
+                            tooltip="Evolución del uso de !important y selectores de ID. Ambos deberían reducirse."
+                            first={importantChartData[0]?.important}
+                            last={importantChartData[importantChartData.length - 1]?.important}
+                          />
+                          <ResponsiveContainer width="100%" height={250}>
+                            <BarChart data={importantChartData}>
+                              <CartesianGrid strokeDasharray="3 3" stroke="#f0f2f1" />
+                              <XAxis dataKey="date" tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
+                              <YAxis tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
+                              <Tooltip contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.08)' }} />
+                              <Legend />
+                              <Bar dataKey="important" fill="#9e2b25" radius={[4, 4, 0, 0]} name="!important" />
+                              <Bar dataKey="ids" fill="#a67c00" radius={[4, 4, 0, 0]} name="IDs" />
+                            </BarChart>
+                          </ResponsiveContainer>
+                        </Card>
+
+                        <Card className="p-6">
+                          <ChartTitle
+                            title="Ratio de Reutilizacion"
+                            tooltip="Porcentaje de declaraciones CSS reutilizadas. Un ratio más alto indica CSS más eficiente."
+                            first={reuseChartData[0]?.ratio}
+                            last={reuseChartData[reuseChartData.length - 1]?.ratio}
+                            downIsGood={false}
+                          />
+                          <ResponsiveContainer width="100%" height={250}>
+                            <LineChart data={reuseChartData}>
+                              <CartesianGrid strokeDasharray="3 3" stroke="#f0f2f1" />
+                              <XAxis dataKey="date" tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
+                              <YAxis tick={{ fontSize: 11 }} tickLine={false} axisLine={false} domain={[0, 100]} tickFormatter={(v) => `${v}%`} />
+                              <Tooltip contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.08)' }} formatter={(v: any) => [`${v}%`, 'Reutilización']} />
+                              <Line type="monotone" dataKey="ratio" stroke="#006c48" strokeWidth={2} dot={{ r: 3, fill: '#006c48' }} name="Reutilización" />
+                            </LineChart>
+                          </ResponsiveContainer>
+                        </Card>
+                      </div>
+                    </>
+                  )}
+
+                  {/* Scan history table */}
+                  {scans.length > 0 && (
+                    <Card className="p-6">
+                      <SectionHeader title="Historial de escaneos" tooltip="Todos los escaneos realizados para este proyecto, del más reciente al más antiguo. Haz clic en el ojo para ver el detalle." />
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="border-b" style={{ borderColor: 'rgba(11, 31, 22, 0.08)' }}>
+                              <th className="text-left py-2 pr-3 text-[11px] font-medium text-[#52695b] uppercase tracking-wider">Etiqueta</th>
+                              <th className="text-left py-2 pr-3 text-[11px] font-medium text-[#52695b] uppercase tracking-wider">Fecha</th>
+                              <th className="text-right py-2 pr-3 text-[11px] font-medium text-[#52695b] uppercase tracking-wider">Score</th>
+                              <th className="text-right py-2 pr-3 text-[11px] font-medium text-[#52695b] uppercase tracking-wider">Peso</th>
+                              <th className="text-right py-2 pr-3 text-[11px] font-medium text-[#52695b] uppercase tracking-wider">Lineas</th>
+                              <th className="text-right py-2 pr-3 text-[11px] font-medium text-[#52695b] uppercase tracking-wider">Clases</th>
+                              <th className="text-right py-2 pr-3 text-[11px] font-medium text-[#52695b] uppercase tracking-wider">IDs</th>
+                              <th className="text-right py-2 pr-3 text-[11px] font-medium text-[#52695b] uppercase tracking-wider">!imp</th>
+                              <th className="text-right py-2 pr-3 text-[11px] font-medium text-[#52695b] uppercase tracking-wider">Vars</th>
+                              <th className="text-right py-2 pr-3 text-[11px] font-medium text-[#52695b] uppercase tracking-wider">Select.</th>
+                              <th className="text-right py-2 pr-3 text-[11px] font-medium text-[#52695b] uppercase tracking-wider">Decl.</th>
+                              <th className="text-right py-2 pr-3 text-[11px] font-medium text-[#52695b] uppercase tracking-wider">Unicas</th>
+                              <th className="text-right py-2 pr-3 text-[11px] font-medium text-[#52695b] uppercase tracking-wider">Reuso</th>
+                              <th className="text-center py-2 text-[11px] font-medium text-[#52695b] uppercase tracking-wider">Acciones</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {scans.map((scan, i) => {
+                              const scoreColor = scan.health_score >= 70 ? '#006c48' : scan.health_score >= 40 ? '#a67c00' : '#9e2b25'
+                              return (
+                                <tr key={scan.id} className="border-b last:border-0" style={{ borderColor: 'rgba(11, 31, 22, 0.05)' }}>
+                                  <td className="py-2.5 pr-3">
+                                    <span className="text-[13px] font-medium text-[#1a2e23]">{scan.label}</span>
+                                  </td>
+                                  <td className="py-2.5 pr-3 text-[12px] text-[#52695b] whitespace-nowrap">
+                                    {new Date(scan.created_at).toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: '2-digit' })}
+                                  </td>
+                                  <td className="py-2.5 pr-3 text-right">
+                                    <span className="text-[13px] font-bold" style={{ color: scoreColor }}>{scan.health_score}</span>
+                                  </td>
+                                  <td className="py-2.5 pr-3 text-right text-[12px] text-[#1a2e23]">{(scan.file_size / 1024).toFixed(1)} KB</td>
+                                  <td className="py-2.5 pr-3 text-right text-[12px] text-[#1a2e23]">{scan.line_count.toLocaleString()}</td>
+                                  <td className="py-2.5 pr-3 text-right text-[12px] text-[#1a2e23]">{scan.class_count.toLocaleString()}</td>
+                                  <td className="py-2.5 pr-3 text-right text-[12px] text-[#1a2e23]">{scan.id_count.toLocaleString()}</td>
+                                  <td className="py-2.5 pr-3 text-right text-[12px] text-[#1a2e23]">{scan.important_count.toLocaleString()}</td>
+                                  <td className="py-2.5 pr-3 text-right text-[12px] text-[#1a2e23]">{scan.variable_count.toLocaleString()}</td>
+                                  <td className="py-2.5 pr-3 text-right text-[12px] text-[#1a2e23]">{scan.total_selectors.toLocaleString()}</td>
+                                  <td className="py-2.5 pr-3 text-right text-[12px] text-[#1a2e23]">{scan.total_declarations.toLocaleString()}</td>
+                                  <td className="py-2.5 pr-3 text-right text-[12px] text-[#1a2e23]">{scan.unique_declarations.toLocaleString()}</td>
+                                  <td className="py-2.5 pr-3 text-right text-[12px] text-[#1a2e23]">{(scan.reuse_ratio * 100).toFixed(0)}%</td>
+                                  <td className="py-2.5 text-center">
+                                    <div className="flex items-center justify-center gap-1">
+                                      <button
+                                        onClick={() => setSelectedScanId(scan.id)}
+                                        className="p-1.5 rounded-lg hover:bg-[#e5f2ec] transition-colors"
+                                        title="Ver detalle"
+                                      >
+                                        <Eye size={15} className="text-[#006c48]" />
+                                      </button>
+                                      <button
+                                        onClick={async () => {
+                                          if (!confirm('¿Eliminar este escaneo?')) return
+                                          try {
+                                            await deleteScan(scan.id)
+                                            if (selectedProjectId) await loadScans(selectedProjectId)
+                                          } catch (err) { console.error('Error deleting scan:', err) }
+                                        }}
+                                        className="p-1.5 rounded-lg hover:bg-[#fbe8e6] transition-colors"
+                                        title="Eliminar"
+                                      >
+                                        <Trash2 size={15} className="text-[#9e2b25]" />
+                                      </button>
+                                    </div>
+                                  </td>
+                                </tr>
+                              )
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </Card>
+                  )}
+                </div>
+              )}
+
+              {/* ─── CONFRONTAR HG5 TAB ─── */}
+              {activeTab === 'confrontar' && (
+                <ConfrontarTab
+                  hg5Result={hg5Result}
+                  userResult={latestDetail?.analysis_data as AnalysisResult | undefined}
+                  hg5Loading={hg5Loading}
+                  hg5Error={hg5Error}
+                  onRetry={() => { hg5FetchedRef.current = false; loadHg5() }}
+                />
+              )}
+
+              {/* ─── PLAN DE ACCIÓN TAB ─── */}
+              {activeTab === 'plan' && (() => {
+                const sevColor: Record<string, string> = { critical: '#9e2b25', high: '#a67c00', medium: '#52695b', low: '#006c48' }
+                const sevBg: Record<string, string> = { critical: '#fbe8e6', high: '#fbf2d9', medium: '#f0f2f1', low: '#e5f2ec' }
+                const sevLabel: Record<string, string> = { critical: 'Crítico', high: 'Alto', medium: 'Medio', low: 'Bajo' }
+
+                // Determine which scan to show plan for
+                const activePlanScanId = planScanId || (scans.length > 0 ? scans[0].id : null)
+                const planDetail = activePlanScanId ? allScanDetails.get(activePlanScanId) : latestDetail
+                const activePlanScan = scans.find(s => s.id === activePlanScanId)
+
+                // Auto-generated items from selected scan — with real data
+                type AutoDetail = { cells: (string | number)[]; swatch?: string }
+                type AutoItem = { title: string; value: string; severity: string; description: string; detailHeaders?: string[]; detailRows?: AutoDetail[] }
+                const autoItems: AutoItem[] = []
+                if (planDetail?.analysis_data) {
+                  const ad = planDetail.analysis_data as AnalysisResult
+
+                  // !important
+                  if (ad.importantCount > 0) {
+                    const imps = ad.importants || []
+                    autoItems.push({
+                      severity: ad.importantCount > 50 ? 'critical' : ad.importantCount > 20 ? 'high' : 'medium',
+                      title: 'Eliminar !important', value: `${ad.importantCount}`,
+                      description: 'Reescribir selectores con mayor especificidad natural.',
+                      detailHeaders: ['Propiedad', 'Selector', 'Línea'],
+                      detailRows: imps.map(imp => ({ cells: [imp.property, imp.selector, imp.line] })),
+                    })
+                  }
+
+                  // ID selectors
+                  if (ad.idCount > 0) {
+                    const idSels = ad.specificityDistribution.filter(s => s.specificity[0] > 0)
+                    autoItems.push({
+                      severity: ad.idCount > 20 ? 'high' : 'medium',
+                      title: 'Reemplazar selectores de ID', value: `${ad.idCount}`,
+                      description: 'Cambiar #id por .clase.',
+                      detailHeaders: ['Selector', 'Especificidad', 'Línea'],
+                      detailRows: idSels.map(s => ({ cells: [s.selector, `(${s.specificity.join(',')})`, s.line] })),
+                    })
+                  }
+
+                  // Colors
+                  if (ad.colors?.length > 0) {
+                    const sorted = [...ad.colors].sort((a, b) => b.count - a.count)
+                    autoItems.push({
+                      severity: ad.colors.length > 50 ? 'critical' : 'high',
+                      title: 'Migrar colores a variables DS', value: `${ad.colors.length}`,
+                      description: 'Sustituir hardcodeados por tokens.',
+                      detailHeaders: ['Color', 'Usos', 'Línea'],
+                      detailRows: sorted.map(c => ({ cells: [c.normalized, c.count, c.locations[0]?.line ?? '–'], swatch: c.normalized })),
+                    })
+                  }
+
+                  // Bad font families
+                  const badFam = (ad.fontFamilies || []).filter(f => classifyFamily(f.normalized || f.value) === 'eliminate')
+                  if (badFam.length > 0) {
+                    autoItems.push({
+                      severity: 'high',
+                      title: 'Eliminar fuentes no autorizadas', value: `${badFam.length}`,
+                      description: 'Reemplazar por Suisse.',
+                      detailHeaders: ['Familia', 'Usos', 'Línea ejemplo'],
+                      detailRows: [...badFam].sort((a, b) => b.count - a.count).map(f => ({ cells: [f.normalized.replace(/['"]/g, ''), f.count, f.locations[0]?.line ?? '–'] })),
+                    })
+                  }
+
+                  // Duplicate selectors
+                  if (ad.duplicateSelectors?.length > 0) {
+                    autoItems.push({
+                      severity: 'medium',
+                      title: 'Unificar selectores duplicados', value: `${ad.duplicateSelectors.length}`,
+                      description: 'Fusionar reglas duplicadas.',
+                      detailHeaders: ['Selector', 'Repeticiones', 'Líneas'],
+                      detailRows: [...ad.duplicateSelectors].sort((a, b) => b.occurrences.length - a.occurrences.length).map(d => ({
+                        cells: [d.key, d.occurrences.length, d.occurrences.slice(0, 5).map(o => o.line).join(', ') + (d.occurrences.length > 5 ? '…' : '')]
+                      })),
+                    })
+                  }
+
+                  // Vendor prefixes
+                  if (ad.vendorPrefixCount > 10) autoItems.push({ severity: 'low', title: 'Automatizar vendor prefixes', value: `${ad.vendorPrefixCount}`, description: 'Configurar Autoprefixer.' })
+                }
+
+                return (
+                  <div className="space-y-6">
+                    {/* Header + Scan selector + Add button */}
+                    <div className="flex items-center justify-between gap-3">
+                      <SectionHeader title="Plan de Acción" tooltip="Acciones para mejorar la calidad del CSS. Las automáticas se generan desde el escaneo seleccionado. Puedes añadir las tuyas." />
+                      <div className="flex items-center gap-2 ml-auto">
+                        {/* Scan selector */}
+                        {scans.length > 1 && (
+                          <select
+                            value={activePlanScanId || ''}
+                            onChange={(e) => {
+                              setPlanScanId(e.target.value)
+                              setExpandedAutoItems(new Set())
+                            }}
+                            className="h-8 px-2 pr-7 rounded-lg text-xs font-medium bg-white text-[#1a2e23] appearance-none cursor-pointer focus:outline-none focus:ring-2 focus:ring-[#006c48]"
+                            style={{
+                              border: '1px solid rgba(11, 31, 22, 0.14)',
+                              backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='%2352695b' viewBox='0 0 24 24'%3E%3Cpath d='M7 10l5 5 5-5z'/%3E%3C/svg%3E")`,
+                              backgroundRepeat: 'no-repeat',
+                              backgroundPosition: 'right 6px center',
+                            }}
+                          >
+                            {scans.map((s, idx) => (
+                              <option key={s.id} value={s.id}>
+                                {s.label || `Escaneo ${scans.length - idx}`}
+                                {idx === 0 ? ' (último)' : ''}
+                              </option>
+                            ))}
+                          </select>
+                        )}
+                        <Button
+                          size="sm"
+                          className="gap-1.5 h-8"
+                          style={{ background: '#012d1d' }}
+                          onClick={() => { resetForm(); setShowAddForm(true) }}
+                        >
+                          <Plus size={14} />
+                          Añadir acción
+                        </Button>
+                      </div>
+                    </div>
+
+                    {/* Scan info bar */}
+                    {activePlanScan && (
+                      <div className="flex items-center gap-3 px-3 py-2 rounded-lg bg-[#f8f9fa] text-[11px] text-[#52695b]">
+                        <span className="font-semibold text-[#1a2e23]">{activePlanScan.label || 'Sin etiqueta'}</span>
+                        <span>·</span>
+                        <span>{new Date(activePlanScan.created_at).toLocaleDateString('es-ES', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
+                        {planDetail?.analysis_data && (() => {
+                          const ad = planDetail.analysis_data as AnalysisResult
+                          return (
+                            <>
+                              <span>·</span>
+                              <span>Score: <span className="font-bold" style={{ color: ad.healthScore >= 70 ? '#006c48' : ad.healthScore >= 40 ? '#a67c00' : '#9e2b25' }}>{ad.healthScore}</span></span>
+                              <span>·</span>
+                              <span>{(ad.fileSize / 1024).toFixed(0)} KB</span>
+                            </>
+                          )
+                        })()}
+                        {activePlanScanId !== scans[0]?.id && (
+                          <>
+                            <span className="ml-auto" />
+                            <button
+                              onClick={() => { setPlanScanId(null); setExpandedAutoItems(new Set()) }}
+                              className="text-[#006c48] font-medium hover:underline"
+                            >
+                              Ir al último →
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Add / Edit modal */}
+                    {showAddForm && (
+                      <div className="fixed inset-0 z-50 flex items-center justify-center" onClick={resetForm}>
+                        {/* Backdrop */}
+                        <div className="absolute inset-0 bg-black/30 backdrop-blur-sm" />
+                        {/* Modal */}
+                        <div
+                          className="relative w-full max-w-md mx-4 rounded-2xl p-6 shadow-xl"
+                          style={{ background: '#ffffff', border: '1px solid rgba(11, 31, 22, 0.08)' }}
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <div className="flex items-center justify-between mb-5">
+                            <h3 className="text-base font-semibold text-[#1a2e23]">
+                              {editingItemId ? 'Editar acción' : 'Nueva acción'}
+                            </h3>
+                            <button onClick={resetForm} className="p-1.5 rounded-lg hover:bg-[#f0f2f1] transition-colors">
+                              <X size={18} className="text-[#52695b]" />
+                            </button>
+                          </div>
+                          <div className="space-y-4">
+                            <div>
+                              <label className="block text-sm font-medium text-[#1a2e23] mb-1.5">Título</label>
+                              <input
+                                type="text"
+                                value={formTitle}
+                                onChange={(e) => setFormTitle(e.target.value)}
+                                placeholder="Ej: Migrar variables de color a tokens DS..."
+                                className="w-full px-3 py-2.5 rounded-lg text-sm bg-white text-[#0b1f16] focus:outline-none focus:ring-2 focus:ring-[#006c48]"
+                                style={{ border: '1px solid rgba(11, 31, 22, 0.14)' }}
+                                autoFocus
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-sm font-medium text-[#1a2e23] mb-1.5">Prioridad</label>
+                              <div className="flex gap-2">
+                                {(['critical', 'high', 'medium', 'low'] as ActionPriority[]).map((p) => (
+                                  <button
+                                    key={p}
+                                    onClick={() => setFormPriority(p)}
+                                    className="flex-1 px-3 py-2 rounded-lg text-xs font-medium transition-all"
+                                    style={{
+                                      background: formPriority === p ? sevBg[p] : 'transparent',
+                                      color: sevColor[p],
+                                      border: `1.5px solid ${formPriority === p ? sevColor[p] : 'rgba(11,31,22,0.1)'}`,
+                                      opacity: formPriority === p ? 1 : 0.5,
+                                    }}
+                                  >
+                                    {sevLabel[p]}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                            <div>
+                              <label className="block text-sm font-medium text-[#1a2e23] mb-1.5">Descripción <span className="text-[#8a9b92] font-normal">(opcional)</span></label>
+                              <textarea
+                                value={formDescription}
+                                onChange={(e) => setFormDescription(e.target.value)}
+                                placeholder="Contexto, pasos, notas..."
+                                rows={3}
+                                className="w-full px-3 py-2.5 rounded-lg text-sm bg-white text-[#0b1f16] resize-none focus:outline-none focus:ring-2 focus:ring-[#006c48]"
+                                style={{ border: '1px solid rgba(11, 31, 22, 0.14)' }}
+                              />
+                            </div>
+                            <div className="flex gap-3 pt-2">
+                              <Button
+                                className="flex-1 h-10"
+                                style={{ background: '#012d1d' }}
+                                onClick={editingItemId ? handleUpdateItem : handleAddItem}
+                                disabled={!formTitle.trim()}
+                              >
+                                {editingItemId ? 'Guardar cambios' : 'Añadir acción'}
+                              </Button>
+                              <Button variant="outline" className="flex-1 h-10" onClick={resetForm}>
+                                Cancelar
+                              </Button>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Unified action items list */}
+                    {actionLoading ? (
+                      <div className="flex items-center gap-2 py-4 justify-center">
+                        <Loader2 size={16} className="animate-spin text-[#006c48]" />
+                        <span className="text-sm text-[#52695b]">Cargando acciones...</span>
+                      </div>
+                    ) : (() => {
+                      // Build unified list: manual items first (reorderable), then auto items
+                      type UnifiedItem = { kind: 'manual'; item: ActionItem; manualIdx: number } | { kind: 'auto'; title: string; value: string; severity: string; description: string }
+                      const unified: UnifiedItem[] = [
+                        ...actionItems.map((item, i) => ({ kind: 'manual' as const, item, manualIdx: i })),
+                        ...autoItems.map((a) => ({ kind: 'auto' as const, ...a })),
+                      ]
+
+                      return unified.length > 0 ? (
+                        <div className="space-y-2">
+                          {unified.map((entry, i) => {
+                            if (entry.kind === 'manual') {
+                              const { item, manualIdx } = entry
+                              return (
+                                <Card key={item.id} className="p-4 group" style={{ borderLeft: `3px solid ${sevColor[item.priority]}` }}>
+                                  <div className="flex items-start gap-3">
+                                    {/* Reorder buttons */}
+                                    <div className="flex flex-col gap-0.5 shrink-0 pt-0.5">
+                                      <button
+                                        onClick={() => handleMoveItem(manualIdx, 'up')}
+                                        disabled={manualIdx === 0}
+                                        className="p-0.5 rounded hover:bg-[#f0f2f1] disabled:opacity-20 transition-opacity"
+                                      >
+                                        <ChevronUp size={14} className="text-[#52695b]" />
+                                      </button>
+                                      <button
+                                        onClick={() => handleMoveItem(manualIdx, 'down')}
+                                        disabled={manualIdx === actionItems.length - 1}
+                                        className="p-0.5 rounded hover:bg-[#f0f2f1] disabled:opacity-20 transition-opacity"
+                                      >
+                                        <ChevronDown size={14} className="text-[#52695b]" />
+                                      </button>
+                                    </div>
+                                    {/* Content */}
+                                    <div className="flex-1 min-w-0">
+                                      <div className="flex items-center gap-2 mb-1">
+                                        <Badge className="text-[10px] px-1.5 py-0" style={{ background: sevBg[item.priority], color: sevColor[item.priority] }}>
+                                          {sevLabel[item.priority]}
+                                        </Badge>
+                                        <h4 className="text-sm font-semibold text-[#1a2e23]">{item.title}</h4>
+                                      </div>
+                                      {item.description && (
+                                        <p className="text-xs text-[#52695b] mt-0.5">{item.description}</p>
+                                      )}
+                                    </div>
+                                    {/* Actions */}
+                                    <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                                      <button onClick={() => startEdit(item)} className="p-1.5 rounded hover:bg-[#f0f2f1] transition-colors" title="Editar">
+                                        <Pencil size={13} className="text-[#52695b]" />
+                                      </button>
+                                      <button onClick={() => handleDeleteItem(item.id)} className="p-1.5 rounded hover:bg-[#fbe8e6] transition-colors" title="Eliminar">
+                                        <Trash2 size={13} className="text-[#9e2b25]" />
+                                      </button>
+                                    </div>
+                                  </div>
+                                </Card>
+                              )
+                            } else {
+                              const autoIdx = i - actionItems.length
+                              const isExpanded = expandedAutoItems.has(autoIdx)
+                              const hasDetails = entry.detailHeaders && entry.detailRows && entry.detailRows.length > 0
+                              const PREVIEW = 10
+                              const visibleRows = isExpanded ? entry.detailRows : entry.detailRows?.slice(0, PREVIEW)
+
+                              return (
+                                <Card key={`auto-${i}`} className="p-4" style={{ borderLeft: `3px solid ${sevColor[entry.severity]}` }}>
+                                  <div
+                                    className={`flex items-start justify-between gap-4 ${hasDetails ? 'cursor-pointer' : ''}`}
+                                    onClick={() => {
+                                      if (!hasDetails) return
+                                      setExpandedAutoItems(prev => {
+                                        const next = new Set(prev)
+                                        next.has(autoIdx) ? next.delete(autoIdx) : next.add(autoIdx)
+                                        return next
+                                      })
+                                    }}
+                                  >
+                                    <div className="flex-1 min-w-0">
+                                      <div className="flex items-center gap-2 mb-1">
+                                        <Badge className="text-[10px] px-1.5 py-0" style={{ background: sevBg[entry.severity], color: sevColor[entry.severity] }}>
+                                          {sevLabel[entry.severity]}
+                                        </Badge>
+                                        <Badge className="text-[10px] px-1.5 py-0" style={{ background: 'rgba(0, 108, 72, 0.08)', color: '#006c48', border: '1px solid rgba(0, 108, 72, 0.18)' }}>
+                                          Auto
+                                        </Badge>
+                                        <h4 className="text-sm font-semibold text-[#1a2e23]">{entry.title}</h4>
+                                      </div>
+                                      <p className="text-xs text-[#52695b]">{entry.description}</p>
+                                    </div>
+                                    <div className="flex items-center gap-2 shrink-0">
+                                      <span className="text-sm font-bold text-[#1a2e23]">{entry.value}</span>
+                                      {hasDetails && (
+                                        isExpanded
+                                          ? <ChevronUp size={14} className="text-[#52695b]" />
+                                          : <ChevronDown size={14} className="text-[#52695b]" />
+                                      )}
+                                    </div>
+                                  </div>
+
+                                  {/* Expandable detail table */}
+                                  {hasDetails && isExpanded && (
+                                    <div className="mt-3 rounded-lg border border-[#f0f2f1] overflow-hidden">
+                                      <div className="overflow-x-auto">
+                                        <table className="w-full text-[11px]">
+                                          <thead>
+                                            <tr className="bg-[#f8f9fa]">
+                                              {entry.detailHeaders!.map((h, hi) => (
+                                                <th key={hi} className="text-left py-1.5 px-2 font-medium text-[#52695b] uppercase tracking-wider">{h}</th>
+                                              ))}
+                                            </tr>
+                                          </thead>
+                                          <tbody>
+                                            {visibleRows!.map((row, ri) => (
+                                              <tr key={ri} className="border-t border-[#f0f2f1]" style={{ background: ri % 2 === 0 ? '#fef2f1' : '#fef2f180' }}>
+                                                {row.cells.map((cell, ci) => (
+                                                  <td key={ci} className="py-1.5 px-2 font-mono text-[#1a2e23] truncate max-w-[280px]">
+                                                    {ci === 0 && row.swatch ? (
+                                                      <span className="inline-flex items-center gap-1.5">
+                                                        <span className="inline-block w-3 h-3 rounded-sm border border-[#f0f2f1] shrink-0" style={{ backgroundColor: row.swatch }} />
+                                                        {cell}
+                                                      </span>
+                                                    ) : cell}
+                                                  </td>
+                                                ))}
+                                              </tr>
+                                            ))}
+                                          </tbody>
+                                        </table>
+                                      </div>
+                                      {entry.detailRows!.length > PREVIEW && (
+                                        <div className="text-center py-1.5 border-t border-[#f0f2f1] bg-[#f8f9fa]">
+                                          <span className="text-[10px] text-[#52695b]">
+                                            {isExpanded
+                                              ? `Mostrando todos (${entry.detailRows!.length})`
+                                              : `${PREVIEW} de ${entry.detailRows!.length}`}
+                                          </span>
+                                        </div>
+                                      )}
+                                    </div>
+                                  )}
+                                </Card>
+                              )
+                            }
+                          })}
+                        </div>
+                      ) : (
+                        <Card className="p-8 text-center" style={{ background: '#e5f2ec' }}>
+                          <CheckCircle size={32} className="mx-auto mb-2 text-[#006c48]" />
+                          <p className="text-sm font-medium text-[#006c48]">Sin acciones pendientes. Tu CSS está en buen estado.</p>
+                        </Card>
+                      )
+                    })()}
+                  </div>
+                )
+              })()}
+            </div>
           ) : (
-            <Card className="p-12 text-center">
-              <p className="text-[#3d5a4a]">
-                No hay escaneos en este proyecto aun. Realiza un analisis en la seccion "Analizar" para comenzar.
-              </p>
+            <Card className="p-8 text-center">
+              <p className="text-[#3d5a4a]">No hay escaneos para este proyecto. Crea uno en "Nuevo escaneo".</p>
             </Card>
           )
         ) : (
-          <div className="flex items-center justify-center py-24">
-            <p className="text-[#3d5a4a] text-lg">Crea un proyecto para comenzar</p>
-          </div>
+          <Card className="p-8 text-center">
+            <p className="text-[#3d5a4a]">Selecciona un proyecto para continuar.</p>
+          </Card>
         )}
       </div>
 
-      {selectedScanId && <ScanDetailModal scanId={selectedScanId} onClose={() => setSelectedScanId(null)} />}
+      {/* ScanDetailModal for future use */}
+      {selectedScanId && latestDetail && (
+        <ScanDetailModal
+          scanId={latestDetail.id}
+          analysis_data={latestDetail.analysis_data}
+          w3c_validation={latestDetail.w3c_validation}
+          ds_coverage={latestDetail.ds_coverage}
+          onClose={() => setSelectedScanId(null)}
+          {...(latestDetail as any)}
+        />
+      )}
     </div>
   )
 }

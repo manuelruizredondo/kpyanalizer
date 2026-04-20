@@ -258,3 +258,108 @@ export async function deleteScan(scanId: string): Promise<void> {
   const { error } = await supabase.from('scans').delete().eq('id', scanId)
   if (error) throw error
 }
+
+// ─── Action Items ──────────────────────────────────────────────────
+
+export type ActionPriority = 'critical' | 'high' | 'medium' | 'low'
+
+export interface ActionItem {
+  id: string
+  project_id: string
+  title: string
+  description: string
+  priority: ActionPriority
+  sort_order: number
+  created_by: string
+  created_at: string
+  updated_at: string
+}
+
+/**
+ * Get all action items for a project, ordered by sort_order
+ */
+export async function getActionItems(projectId: string): Promise<ActionItem[]> {
+  const { data, error } = await supabase
+    .from('action_items')
+    .select('*')
+    .eq('project_id', projectId)
+    .order('sort_order', { ascending: true })
+
+  if (error) throw error
+  return data || []
+}
+
+/**
+ * Create a new action item
+ */
+export async function createActionItem(
+  projectId: string,
+  title: string,
+  priority: ActionPriority,
+  description: string = '',
+): Promise<ActionItem> {
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) throw new Error('User not authenticated')
+
+  // Get max sort_order for this project
+  const { data: existing } = await supabase
+    .from('action_items')
+    .select('sort_order')
+    .eq('project_id', projectId)
+    .order('sort_order', { ascending: false })
+    .limit(1)
+
+  const nextOrder = (existing && existing.length > 0 ? existing[0].sort_order : -1) + 1
+
+  const { data, error } = await supabase
+    .from('action_items')
+    .insert({
+      project_id: projectId,
+      title,
+      description,
+      priority,
+      sort_order: nextOrder,
+      created_by: user.id,
+    })
+    .select()
+    .single()
+
+  if (error) throw error
+  return data
+}
+
+/**
+ * Update an action item (title, description, priority)
+ */
+export async function updateActionItem(
+  id: string,
+  updates: Partial<Pick<ActionItem, 'title' | 'description' | 'priority'>>,
+): Promise<void> {
+  const { error } = await supabase
+    .from('action_items')
+    .update(updates)
+    .eq('id', id)
+
+  if (error) throw error
+}
+
+/**
+ * Delete an action item
+ */
+export async function deleteActionItem(id: string): Promise<void> {
+  const { error } = await supabase.from('action_items').delete().eq('id', id)
+  if (error) throw error
+}
+
+/**
+ * Reorder action items — receives the full ordered list of IDs
+ */
+export async function reorderActionItems(orderedIds: string[]): Promise<void> {
+  // Update each item's sort_order in parallel
+  const updates = orderedIds.map((id, index) =>
+    supabase.from('action_items').update({ sort_order: index }).eq('id', id)
+  )
+  const results = await Promise.all(updates)
+  const failed = results.find(r => r.error)
+  if (failed?.error) throw failed.error
+}

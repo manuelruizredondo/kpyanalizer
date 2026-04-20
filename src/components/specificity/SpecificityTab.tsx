@@ -6,35 +6,20 @@ import {
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine
 } from "recharts"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Zap, Hash, TrendingUp, AlertTriangle, Info } from "lucide-react"
+import { InfoTooltip } from "@/components/ui/InfoTooltip"
+import { C } from "@/lib/colors"
+import { Zap, Hash, TrendingUp, AlertTriangle } from "lucide-react"
 
 interface SpecificityTabProps {
   result: AnalysisResult
 }
 
-// App palette colors
+// Map shared palette to local names used in this file
 const COLORS = {
-  green: "#006c48",
-  lightGreen1: "#2a9d6e",
-  lightGreen2: "#5cc49a",
-  yellow: "#a67c00",
-  red: "#9e2b25",
-  dark: "#1a2e23",
-  muted: "#3d5a4a",
-  bg: "#f0f2f1",
-}
-
-// ─── Info Tooltip ──────────────────────────────────────────────────
-function InfoTooltip({ text }: { text: string }) {
-  return (
-    <span className="relative group inline-flex ml-1">
-      <Info size={13} className="text-[#3d5a4a]/50 hover:text-[#006c48] cursor-help transition-colors" />
-      <span className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-64 rounded-lg bg-[#1a2e23] text-white text-xs leading-relaxed px-3 py-2 opacity-0 group-hover:opacity-100 transition-opacity z-50 shadow-lg">
-        {text}
-        <span className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-[#1a2e23]" />
-      </span>
-    </span>
-  )
+  ...C,
+  lightGreen1: C.green2,
+  lightGreen2: C.green3,
+  bg: C.bg2,
 }
 
 // ─── Specificity Graph Health Assessment ──────────────────────────

@@ -2,7 +2,7 @@ import { useMemo } from "react"
 import type { AnalysisResult } from "@/types/analysis"
 import {
   Hash, AtSign, AlertTriangle, Copy,
-  Layers, Monitor, Play, FileText, Variable, Percent, Code, Zap, Package, Info,
+  Layers, Monitor, Play, FileText, Variable, Percent, Code, Zap, Package,
 } from "lucide-react"
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -10,23 +10,9 @@ import {
 } from "recharts"
 import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
+import { InfoTooltip } from "@/components/ui/InfoTooltip"
+import { C, CHART_COLORS, TT_STYLE } from "@/lib/colors"
 import type { LucideIcon } from "lucide-react"
-
-// ─── Palette ──────────────────────────────────────────────────────
-const C = {
-  green: "#006c48",
-  green2: "#2a9d6e",
-  green3: "#5cc49a",
-  yellow: "#a67c00",
-  red: "#9e2b25",
-  dark: "#1a2e23",
-  muted: "#3d5a4a",
-  bg: "#f8f9fa",
-  bg2: "#f0f2f1",
-}
-
-const PIE_COLORS = [C.green2, C.yellow, C.red, "#8b5cf6", "#10b981"]
-const TT_STYLE = { borderRadius: 12, border: "none", boxShadow: "0 4px 16px rgba(0,0,0,0.08)", fontSize: 12 } as const
 
 // ─── Helpers ──────────────────────────────────────────────────────
 function scoreColor(s: number) {
@@ -43,19 +29,6 @@ function complexityConfig(r: string) {
     critical: { label: "Critica", color: C.red,    bg: "bg-[#fef2f1] text-[#9e2b25]", desc: "Refactorizacion urgente" },
   }
   return map[r] || map.medium
-}
-
-// ─── Info Tooltip ─────────────────────────────────────────────────
-function InfoTooltip({ text }: { text: string }) {
-  return (
-    <span className="relative group inline-flex">
-      <Info size={12} className="text-[#3d5a4a]/40 hover:text-[#006c48] cursor-help transition-colors" />
-      <span className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-52 rounded-lg bg-[#1a2e23] text-white text-[10px] leading-relaxed px-2.5 py-1.5 opacity-0 group-hover:opacity-100 transition-opacity z-50 shadow-lg">
-        {text}
-        <span className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-[#1a2e23]" />
-      </span>
-    </span>
-  )
 }
 
 // ─── Mini Metric Card ─────────────────────────────────────────────
@@ -420,7 +393,7 @@ export function OverviewTab({ result }: OverviewTabProps) {
                 <Pie data={hardcodedData} cx="50%" cy="50%" outerRadius={80} innerRadius={35} dataKey="value"
                   label={({ name, value }) => `${name}: ${value}`} labelLine={{ stroke: C.muted, strokeWidth: 1 }}>
                   {hardcodedData.map((_, i) => (
-                    <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
+                    <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
                   ))}
                 </Pie>
                 <Tooltip contentStyle={TT_STYLE} />

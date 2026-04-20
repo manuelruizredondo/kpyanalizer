@@ -1,18 +1,25 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import type { AnalysisResult } from '@/types/analysis'
 import { useAnalysis } from '@/hooks/useAnalysis'
-// import { useW3cValidation } from '@/hooks/useW3cValidation'
+import { classifyFamily } from '@/lib/font-utils'
 import { Card } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import {
   AlertTriangle, CheckCircle, XCircle, ArrowRight, Clock,
   Palette, Type, Bold, Layers, Zap, Copy,
-  Code, Target, TrendingDown,
+  Code, Target, TrendingDown, ChevronDown, ChevronUp,
 } from 'lucide-react'
 
 // ─── Priority Levels ─────────────────────────────────────────────
 type Priority = 'critical' | 'high' | 'medium' | 'low'
+
+interface DetailRow {
+  cells: (string | number)[]
+  severity?: 'bad' | 'warn' | 'ok'
+  swatch?: string // optional color swatch
+}
 
 interface ActionItem {
   id: string
@@ -24,6 +31,8 @@ interface ActionItem {
   impact: string
   howToFix: string
   icon: React.ReactNode
+  detailHeaders?: string[]
+  detailRows?: DetailRow[]
 }
 
 const PRIORITY_CONFIG: Record<Priority, { label: string; color: string; bg: string; border: string; icon: React.ReactNode }> = {
@@ -34,14 +43,7 @@ const PRIORITY_CONFIG: Record<Priority, { label: string; color: string; bg: stri
 }
 
 // ─── DS constants ────────────────────────────────────────────────
-const DS_FONT = 'suisse'
-const GENERIC_FAMILIES = new Set([
-  'sans-serif','serif','monospace','cursive','fantasy','system-ui',
-  'ui-serif','ui-sans-serif','ui-monospace','ui-rounded',
-  'inherit','initial','unset',
-])
 const DS_APPROVED_WEIGHTS = [100, 400, 600, 700]
-
 
 // ─── Generate Action Items ───────────────────────────────────────
 function generateActions(result: AnalysisResult): ActionItem[] {
@@ -50,6 +52,7 @@ function generateActions(result: AnalysisResult): ActionItem[] {
   // 1. !important abuse
   if (result.importantCount > 0) {
     const priority: Priority = result.importantCount > 50 ? 'critical' : result.importantCount > 20 ? 'high' : 'medium'
+    const imps = result.importants || []
     actions.push({
       id: 'important',
       priority,
@@ -58,14 +61,20 @@ function generateActions(result: AnalysisResult): ActionItem[] {
       description: `Se encontraron ${result.importantCount} usos de !important. Fuerzan la cascada CSS y generan guerras de especificidad que hacen el codigo inmantenible.`,
       metric: result.importantCount,
       impact: 'Reduce conflictos de especificidad y facilita el mantenimiento',
-      howToFix: 'Revisa cada !important y reescribe el selector con mayor especificidad natural (clases anidadas, BEM) en lugar de forzar prioridad. Usa la pestaña Hardcodeados > !important para ver cada caso.',
+      howToFix: 'Revisa cada !important y reescribe el selector con mayor especificidad natural (clases anidadas, BEM) en lugar de forzar prioridad.',
       icon: <Zap size={18} className="text-[#9e2b25]" />,
+      detailHeaders: ['Propiedad', 'Selector', 'Línea'],
+      detailRows: imps.map(imp => ({
+        cells: [imp.property, imp.selector, imp.line],
+        severity: 'bad' as const,
+      })),
     })
   }
 
-  // 2. ID selectors
+  // 2. ID selectors (extract from specificity distribution)
   if (result.idCount > 0) {
     const priority: Priority = result.idCount > 20 ? 'high' : result.idCount > 5 ? 'medium' : 'low'
+    const idSelectors = result.specificityDistribution.filter(s => s.specificity[0] > 0)
     actions.push({
       id: 'ids',
       priority,
@@ -76,6 +85,11 @@ function generateActions(result: AnalysisResult): ActionItem[] {
       impact: 'Baja la especificidad maxima y elimina dependencias de IDs en HTML',
       howToFix: 'Cambia #header por .header, #nav por .nav, etc. Si necesitas anclar un estilo a un elemento unico, usa [data-id="header"] o una clase con nombre especifico.',
       icon: <Zap size={18} className="text-[#a67c00]" />,
+      detailHeaders: ['Selector', 'Especificidad', 'Línea'],
+      detailRows: idSelectors.map(s => ({
+        cells: [s.selector, `(${s.specificity.join(',')})`, s.line],
+        severity: 'bad' as const,
+      })),
     })
   }
 
@@ -83,6 +97,7 @@ function generateActions(result: AnalysisResult): ActionItem[] {
   if (result.colors.length > 0) {
     const priority: Priority = result.colors.length > 50 ? 'critical' : result.colors.length > 20 ? 'high' : 'medium'
     const totalUses = result.colors.reduce((s, c) => s + c.count, 0)
+    const sorted = [...result.colors].sort((a, b) => b.count - a.count)
     actions.push({
       id: 'colors',
       priority,
@@ -91,16 +106,21 @@ function generateActions(result: AnalysisResult): ActionItem[] {
       description: `${result.colors.length} colores distintos (${totalUses} usos totales) escritos directamente en el CSS. Deben migrar a variables del Design System.`,
       metric: `${result.colors.length} colores`,
       impact: 'Consistencia visual, modo oscuro preparado, cambios de marca centralizados',
-      howToFix: 'Para cada color, busca la variable CSS mas cercana del DS (--color-*). Usa la pestaña Hardcodeados > Colores para ver las sugerencias HG5. Los colores con match exacto son los que se pueden reemplazar directamente.',
+      howToFix: 'Para cada color, busca la variable CSS mas cercana del DS (--color-*). Usa Confrontar HG5 > Sugerencias de Sustitución para ver reemplazos directos.',
       icon: <Palette size={18} className="text-[#9e2b25]" />,
+      detailHeaders: ['Color', 'Valor', 'Usos', 'Línea'],
+      detailRows: sorted.map(c => ({
+        cells: ['', c.normalized, c.count, c.locations[0]?.line ?? '–'],
+        swatch: c.normalized,
+        severity: 'bad' as const,
+      })),
     })
   }
 
   // 4. Font families to eliminate
-  const badFamilies = result.fontFamilies.filter(f => {
-    const lower = (f.normalized || f.value).toLowerCase().replace(/['"]/g, '').trim()
-    return !lower.includes(DS_FONT) && !GENERIC_FAMILIES.has(lower)
-  })
+  const badFamilies = result.fontFamilies.filter(f =>
+    classifyFamily(f.normalized || f.value) === 'eliminate'
+  )
   if (badFamilies.length > 0) {
     const totalUses = badFamilies.reduce((s, f) => s + f.count, 0)
     actions.push({
@@ -111,8 +131,13 @@ function generateActions(result: AnalysisResult): ActionItem[] {
       description: `${badFamilies.length} familias (${totalUses} usos) que no son Suisse ni genericas. Solo Suisse esta aprobada en el DS.`,
       metric: `${badFamilies.length} familias`,
       impact: 'Consistencia de marca, reduccion de peticiones de fuentes externas',
-      howToFix: `Reemplaza ${badFamilies.slice(0, 5).map(f => '"' + f.value.replace(/['"]/g, '') + '"').join(', ')}${badFamilies.length > 5 ? '...' : ''} por la familia Suisse correspondiente. Revisa la pestaña Tipografia para ver la lista completa.`,
+      howToFix: 'Reemplaza cada familia por la Suisse correspondiente. Consulta la pestaña Tipografia para mapear cada fuente.',
       icon: <Type size={18} className="text-[#9e2b25]" />,
+      detailHeaders: ['Familia', 'Usos', 'Línea ejemplo'],
+      detailRows: [...badFamilies].sort((a, b) => b.count - a.count).map(f => ({
+        cells: [f.normalized.replace(/['"]/g, ''), f.count, f.locations[0]?.line ?? '–'],
+        severity: 'bad' as const,
+      })),
     })
   }
 
@@ -130,8 +155,17 @@ function generateActions(result: AnalysisResult): ActionItem[] {
       description: `${badWeights.length} pesos tipograficos fuera de los aprobados (100, 400, 600, 700). Deben trasladarse al peso mas cercano.`,
       metric: `${badWeights.length} pesos`,
       impact: 'Reduce variantes de fuente cargadas y mantiene consistencia tipografica',
-      howToFix: 'Usa la tabla de Traslado de Grosores en el Dashboard para ver que peso debe usar cada uno. Ej: 300 (Light) → 100, 500 (Medium) → 400, 800 (Extra Bold) → 700.',
+      howToFix: 'Traslada cada peso al mas cercano aprobado: 200/300 → 100, 500 → 400, 800/900 → 700.',
       icon: <Bold size={18} className="text-[#a67c00]" />,
+      detailHeaders: ['Peso actual', 'Usos', 'Reemplazar por'],
+      detailRows: [...badWeights].sort((a, b) => b.count - a.count).map(w => {
+        const n = parseInt(w.normalized, 10)
+        const nearest = n <= 250 ? 100 : n <= 500 ? 400 : n <= 650 ? 600 : 700
+        return {
+          cells: [w.normalized, w.count, String(nearest)],
+          severity: 'warn' as const,
+        }
+      }),
     })
   }
 
@@ -152,8 +186,17 @@ function generateActions(result: AnalysisResult): ActionItem[] {
       description: `${spacingBadPx.length} valores de spacing en px que no son multiplos de 8. La escala debe ser 8, 16, 24, 32, 40, 48...`,
       metric: `${spacingBadPx.length} valores`,
       impact: 'Ritmo visual consistente, alineacion con el grid del DS',
-      howToFix: 'Ajusta cada valor al multiplo de 8 mas cercano. Ej: 12px → 16px, 5px → 8px, 15px → 16px. Revisa en Hardcodeados > Spacing los valores marcados en rojo.',
+      howToFix: 'Ajusta cada valor al multiplo de 8 mas cercano. Ej: 12px → 16px, 5px → 8px.',
       icon: <Target size={18} className="text-[#a67c00]" />,
+      detailHeaders: ['Valor actual', 'Usos', 'Ajustar a'],
+      detailRows: [...spacingBadPx].sort((a, b) => b.count - a.count).map(s => {
+        const n = parseFloat(s.normalized)
+        const nearest = Math.round(n / 8) * 8 || 8
+        return {
+          cells: [s.normalized, s.count, `${nearest}px`],
+          severity: 'warn' as const,
+        }
+      }),
     })
   }
 
@@ -163,6 +206,11 @@ function generateActions(result: AnalysisResult): ActionItem[] {
     return !isNaN(n) && n !== 0 && n % 1000 !== 0
   })
   if (zIrregulars.length > 0) {
+    const DEPTH_NAMES: Record<number, string> = {
+      0: 'Contenido base', 1000: 'Elevados', 2000: 'Dropdowns',
+      3000: 'Headers', 4000: 'Sidebars', 5000: 'Overlays',
+      6000: 'Modales', 7000: 'Tooltips', 8000: 'Alertas', 9000: 'Sistema',
+    }
     actions.push({
       id: 'zindex',
       priority: zIrregulars.length > 10 ? 'high' : 'medium',
@@ -171,8 +219,18 @@ function generateActions(result: AnalysisResult): ActionItem[] {
       description: `${zIrregulars.length} valores z-index que no siguen la escala (0, 1000, 2000...). Valores como 9999, 999, 50 generan conflictos de apilamiento.`,
       metric: `${zIrregulars.length} irregulares`,
       impact: 'Elimina conflictos de z-index y establece un sistema predecible de capas',
-      howToFix: 'Usa la tabla de capas: 0-999 contenido, 1000 elevados, 2000 dropdowns, 3000 headers, 4000 sidebars, 5000 overlays, 6000 modales, 7000 tooltips, 8000 alertas, 9000 sistema. Revisa Hardcodeados > Z-index.',
+      howToFix: 'Ajusta cada valor al multiplo de 1000 de su rango. Revisa Confrontar HG5 > Z-index para la tabla de capas.',
       icon: <Layers size={18} className="text-[#a67c00]" />,
+      detailHeaders: ['Valor actual', 'Usos', 'Capa', 'Ajustar a'],
+      detailRows: [...zIrregulars].sort((a, b) => parseInt(b.value) - parseInt(a.value)).map(z => {
+        const n = parseInt(z.value, 10)
+        const nearest = n < 0 ? 0 : Math.round(n / 1000) * 1000
+        const depthName = DEPTH_NAMES[nearest] || 'Fuera de rango'
+        return {
+          cells: [z.value, z.count, depthName, String(nearest)],
+          severity: 'bad' as const,
+        }
+      }),
     })
   }
 
@@ -187,8 +245,13 @@ function generateActions(result: AnalysisResult): ActionItem[] {
       description: `${result.duplicateSelectors.length} selectores aparecen mas de una vez. Las declaraciones pueden fusionarse.`,
       metric: result.duplicateSelectors.length,
       impact: 'Reduce peso del CSS y evita sobreescrituras accidentales',
-      howToFix: 'Busca cada selector duplicado y fusiona sus declaraciones en una sola regla. Revisa la pestaña Duplicados para ver la lista completa con las lineas afectadas.',
+      howToFix: 'Busca cada selector duplicado y fusiona sus declaraciones en una sola regla.',
       icon: <Copy size={18} className="text-[#3d5a4a]" />,
+      detailHeaders: ['Selector', 'Repeticiones', 'Líneas'],
+      detailRows: [...result.duplicateSelectors].sort((a, b) => b.occurrences.length - a.occurrences.length).map(d => ({
+        cells: [d.key, d.occurrences.length, d.occurrences.map(o => o.line).join(', ')],
+        severity: 'warn' as const,
+      })),
     })
   }
 
@@ -200,11 +263,16 @@ function generateActions(result: AnalysisResult): ActionItem[] {
       priority,
       category: 'Limpieza',
       title: 'Eliminar declaraciones duplicadas',
-      description: `${result.duplicateDeclarations.length} pares propiedad:valor identicos repetidos en distintos selectores. Podrian extraerse a clases utilitarias o mixins.`,
+      description: `${result.duplicateDeclarations.length} pares propiedad:valor identicos repetidos en distintos selectores. Podrian extraerse a clases utilitarias.`,
       metric: result.duplicateDeclarations.length,
       impact: 'Reduce tamano del CSS y mejora mantenimiento via DRY',
-      howToFix: 'Identifica los patrones mas repetidos (ej: display: flex, color: #333) y extrae a clases utilitarias compartidas. Revisa la pestaña Duplicados > Declaraciones.',
+      howToFix: 'Identifica los patrones mas repetidos y extrae a clases utilitarias compartidas.',
       icon: <Copy size={18} className="text-[#3d5a4a]" />,
+      detailHeaders: ['Declaración', 'Repeticiones', 'Líneas'],
+      detailRows: [...result.duplicateDeclarations].sort((a, b) => b.occurrences.length - a.occurrences.length).map(d => ({
+        cells: [d.key, d.occurrences.length, d.occurrences.slice(0, 5).map(o => o.line).join(', ') + (d.occurrences.length > 5 ? '…' : '')],
+        severity: 'warn' as const,
+      })),
     })
   }
 
@@ -218,7 +286,7 @@ function generateActions(result: AnalysisResult): ActionItem[] {
       description: `${result.vendorPrefixCount} vendor prefixes manuales (-webkit-, -moz-, etc.). Deben generarse automaticamente.`,
       metric: result.vendorPrefixCount,
       impact: 'Reduce peso del CSS y asegura compatibilidad actualizada',
-      howToFix: 'Configura Autoprefixer en tu pipeline de build (PostCSS). Elimina todos los prefijos manuales del codigo fuente y deja que la herramienta los genere automaticamente segun tu browserslist.',
+      howToFix: 'Configura Autoprefixer en tu pipeline de build (PostCSS). Elimina todos los prefixes manuales del codigo fuente.',
       icon: <Code size={18} className="text-[#3d5a4a]" />,
     })
   }
@@ -249,7 +317,7 @@ function generateActions(result: AnalysisResult): ActionItem[] {
       description: `El archivo pesa ${sizeKb.toFixed(0)} KB. Un CSS de mas de 200 KB impacta el rendering inicial (bloquea el pintado).`,
       metric: `${sizeKb.toFixed(0)} KB`,
       impact: 'Mejor First Contentful Paint, menor tiempo de carga',
-      howToFix: 'Divide el CSS en critico (above-the-fold) y no-critico (lazy load). Usa PurgeCSS/UnCSS para eliminar reglas no usadas. Habilita compresion gzip/brotli en el servidor.',
+      howToFix: 'Divide el CSS en critico (above-the-fold) y no-critico (lazy load). Usa PurgeCSS/UnCSS para eliminar reglas no usadas. Habilita gzip/brotli.',
       icon: <TrendingDown size={18} className="text-[#a67c00]" />,
     })
   }
@@ -264,7 +332,7 @@ function generateActions(result: AnalysisResult): ActionItem[] {
       description: `Solo el ${(result.reuseRatio * 100).toFixed(0)}% de las declaraciones se reutilizan. Hay demasiado CSS unico.`,
       metric: `${(result.reuseRatio * 100).toFixed(0)}%`,
       impact: 'Reduce peso total, mejora consistencia y facilita cambios globales',
-      howToFix: 'Extrae patrones repetidos a clases utilitarias o componentes reutilizables. Identifica las declaraciones duplicadas en la pestaña Duplicados como punto de partida.',
+      howToFix: 'Extrae patrones repetidos a clases utilitarias o componentes reutilizables. Identifica las declaraciones duplicadas como punto de partida.',
       icon: <Code size={18} className="text-[#3d5a4a]" />,
     })
   }
@@ -305,6 +373,68 @@ function ActionSummary({ actions }: { actions: ActionItem[] }) {
   )
 }
 
+// ─── Detail Table (expandable) ───────────────────────────────────
+const PREVIEW_ROWS = 10
+
+function DetailTable({ headers, rows }: { headers: string[]; rows: DetailRow[] }) {
+  const [expanded, setExpanded] = useState(false)
+  const visible = expanded ? rows : rows.slice(0, PREVIEW_ROWS)
+  const hasMore = rows.length > PREVIEW_ROWS
+
+  return (
+    <div className="mt-3 rounded-lg border border-[#f0f2f1] overflow-hidden">
+      <div className="overflow-x-auto">
+        <table className="w-full text-[11px]">
+          <thead>
+            <tr className="bg-[#f8f9fa]">
+              {headers.map((h, i) => (
+                <th key={i} className="text-left py-1.5 px-2 font-medium text-[#52695b] uppercase tracking-wider">{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {visible.map((row, i) => {
+              const sevBg = row.severity === 'bad' ? '#fef2f1' : row.severity === 'warn' ? '#fef6e0' : 'transparent'
+              return (
+                <tr key={i} className="border-t border-[#f0f2f1]" style={{ background: i % 2 === 0 ? sevBg : `${sevBg}80` }}>
+                  {row.cells.map((cell, j) => (
+                    <td key={j} className="py-1.5 px-2 font-mono text-[#1a2e23] truncate max-w-[260px]">
+                      {j === 0 && row.swatch ? (
+                        <span className="inline-flex items-center gap-1.5">
+                          <span className="inline-block w-3 h-3 rounded-sm border border-[#f0f2f1] shrink-0" style={{ backgroundColor: row.swatch }} />
+                          {cell || row.swatch}
+                        </span>
+                      ) : (
+                        cell
+                      )}
+                    </td>
+                  ))}
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+      {hasMore && (
+        <div className="text-center py-2 border-t border-[#f0f2f1] bg-[#f8f9fa]">
+          <Button
+            size="sm"
+            variant="ghost"
+            className="text-[11px] h-6 text-[#006c48] hover:text-[#006c48] gap-1"
+            onClick={() => setExpanded(!expanded)}
+          >
+            {expanded ? (
+              <><ChevronUp size={12} /> Mostrar solo {PREVIEW_ROWS}</>
+            ) : (
+              <><ChevronDown size={12} /> Ver todos ({rows.length})</>
+            )}
+          </Button>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ─── Main Component ──────────────────────────────────────────────
 export function ActionPlanPage() {
   const { result } = useAnalysis()
@@ -316,27 +446,28 @@ export function ActionPlanPage() {
 
   if (!result) {
     return (
-      <div className="space-y-6 py-6 px-4">
+      <div className="space-y-6 py-8 px-8 max-w-[1440px] mx-auto w-full">
         <div>
-          <h2 className="text-2xl font-bold text-gray-900">Plan de Accion</h2>
-          <p className="text-gray-600 mt-1">
-            Primero analiza un CSS en la pagina{' '}
+          <h2 className="text-xl font-semibold text-[#1a2e23]">Auditoría CSS</h2>
+          <p className="text-sm text-[#52695b] mt-1">
+            Primero analiza un CSS en la página{' '}
             <Link to="/analyze" className="text-[#006c48] underline font-medium">Analizar</Link>{' '}
-            para generar el plan de accion.
+            para generar el plan de acción.
           </p>
         </div>
         <Card className="p-12 text-center">
-          <Target className="h-16 w-16 mx-auto mb-4 text-muted-foreground/30" />
-          <h3 className="text-lg font-semibold text-muted-foreground mb-2">
+          <Target className="h-16 w-16 mx-auto mb-4 text-[#52695b]/30" />
+          <h3 className="text-lg font-semibold text-[#52695b] mb-2">
             Sin datos para analizar
           </h3>
-          <p className="text-sm text-muted-foreground max-w-md mx-auto mb-6">
-            Pega tu CSS compilado en la pagina de Analizar. Una vez procesado, vuelve aqui
-            para ver un plan de accion priorizado con todos los problemas detectados y como resolverlos.
+          <p className="text-sm text-[#8a9b92] max-w-md mx-auto mb-6">
+            Pega tu CSS compilado en la página de Analizar. Una vez procesado, vuelve aquí
+            para ver un plan de acción priorizado con todos los problemas detectados y cómo resolverlos.
           </p>
           <Link
             to="/analyze"
-            className="inline-flex items-center gap-2 px-4 py-2 bg-[#006c48] text-white rounded-lg text-sm font-medium hover:bg-[#004d33] transition-colors"
+            className="inline-flex items-center gap-2 px-4 py-2 text-white rounded-lg text-sm font-medium hover:opacity-90 transition-opacity"
+            style={{ background: '#012d1d' }}
           >
             <Code size={16} />
             Ir a Analizar
@@ -349,12 +480,12 @@ export function ActionPlanPage() {
   const healthColor = result.healthScore >= 70 ? '#006c48' : result.healthScore >= 40 ? '#a67c00' : '#9e2b25'
 
   return (
-    <div className="space-y-6 py-6 px-4">
+    <div className="space-y-6 py-8 px-8 max-w-[1440px] mx-auto w-full">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-2xl font-bold text-gray-900">Plan de Accion</h2>
-          <p className="text-gray-600 mt-1">
+          <h2 className="text-xl font-semibold text-[#1a2e23]">Auditoría CSS</h2>
+          <p className="text-sm text-[#52695b] mt-1">
             {actions.length} acciones identificadas para mejorar tu CSS
             <span className="mx-2">·</span>
             Health Score: <span className="font-bold" style={{ color: healthColor }}>{result.healthScore}/100</span>
@@ -383,7 +514,7 @@ export function ActionPlanPage() {
               <div className="flex-1 h-px" style={{ backgroundColor: `${cfg.color}20` }} />
             </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div className="space-y-4">
               {items.map(item => (
                 <Card key={item.id} className={`p-5 border ${cfg.border} hover:shadow-md transition-shadow`}>
                   <div className="flex items-start gap-3">
@@ -408,6 +539,11 @@ export function ActionPlanPage() {
                           <p className="text-[11px] text-[#1a2e23]"><span className="font-semibold">Como arreglarlo:</span> {item.howToFix}</p>
                         </div>
                       </div>
+
+                      {/* Data detail table */}
+                      {item.detailHeaders && item.detailRows && item.detailRows.length > 0 && (
+                        <DetailTable headers={item.detailHeaders} rows={item.detailRows} />
+                      )}
                     </div>
                   </div>
                 </Card>

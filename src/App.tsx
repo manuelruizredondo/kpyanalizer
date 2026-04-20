@@ -5,7 +5,7 @@ import { LoginPage } from '@/components/auth/LoginPage'
 import { AppLayout } from '@/components/layout/AppLayout'
 import { DashboardPage } from '@/components/dashboard/DashboardPage'
 import { ActionPlanPage } from '@/components/actionplan/ActionPlanPage'
-import { saveScan, getProjects } from '@/lib/scan-storage'
+import { saveScan, getProjects, getProjectScans } from '@/lib/scan-storage'
 import type { Project } from '@/lib/scan-storage'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Card } from '@/components/ui/card'
@@ -39,10 +39,8 @@ function AnalyzePage() {
   const ds = useDesignSystem()
   const [showSaveForm, setShowSaveForm] = useState(false)
   const [projects, setProjects] = useState<Project[]>([])
-  const [saveFormData, setSaveFormData] = useState({
-    projectId: '',
-    label: '',
-  })
+  const [selectedProjectId, setSelectedProjectId] = useState('')
+  const [autoLabel, setAutoLabel] = useState('')
   const [savingStatus, setSavingStatus] = useState<{
     state: 'idle' | 'loading' | 'success' | 'error'
     message: string
@@ -53,6 +51,24 @@ function AnalyzePage() {
       getProjects().then(setProjects).catch(console.error)
     }
   }, [showSaveForm])
+
+  // Auto-generate label when project is selected
+  useEffect(() => {
+    if (!selectedProjectId) {
+      setAutoLabel('')
+      return
+    }
+    getProjectScans(selectedProjectId)
+      .then((scans) => {
+        const nextNum = scans.length + 1
+        const dateStr = new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' })
+        setAutoLabel(`Escaneo #${nextNum} — ${dateStr}`)
+      })
+      .catch(() => {
+        const dateStr = new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' })
+        setAutoLabel(`Escaneo — ${dateStr}`)
+      })
+  }, [selectedProjectId])
 
   const handleCssChange = useCallback(
     (newCss: string) => {
@@ -91,10 +107,10 @@ function AnalyzePage() {
   )
 
   const handleSaveScan = async () => {
-    if (!saveFormData.projectId || !saveFormData.label.trim() || !result) {
+    if (!selectedProjectId || !autoLabel || !result) {
       setSavingStatus({
         state: 'error',
-        message: 'Por favor completa todos los campos requeridos',
+        message: 'Selecciona un proyecto para guardar',
       })
       return
     }
@@ -103,8 +119,8 @@ function AnalyzePage() {
       setSavingStatus({ state: 'loading', message: 'Guardando escaneo...' })
 
       await saveScan(
-        saveFormData.projectId,
-        saveFormData.label,
+        selectedProjectId,
+        autoLabel,
         result,
         w3c.result ? {
           valid: w3c.result.valid ?? true,
@@ -128,7 +144,8 @@ function AnalyzePage() {
       })
       setTimeout(() => {
         setShowSaveForm(false)
-        setSaveFormData({ projectId: '', label: '' })
+        setSelectedProjectId('')
+        setAutoLabel('')
         setSavingStatus({ state: 'idle', message: '' })
       }, 2000)
     } catch (error) {
@@ -141,21 +158,22 @@ function AnalyzePage() {
   }
 
   return (
-    <div className="space-y-6 py-6 px-4">
+    <div className="space-y-6 py-8 px-8 max-w-[1440px] mx-auto w-full">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-2xl font-bold text-gray-900">Analizar CSS</h2>
-          <p className="text-gray-600 mt-1">
+          <h2 className="text-xl font-semibold text-[#1a2e23]">Analizar CSS</h2>
+          <p className="text-sm text-[#52695b] mt-1">
             Pega o arrastra tu CSS compilado para obtener métricas de calidad
           </p>
         </div>
         {result && (
           <Button
             onClick={() => setShowSaveForm(!showSaveForm)}
-            size="lg"
-            className="gap-2"
+            size="sm"
+            className="gap-2 h-9"
+            style={{ background: '#012d1d' }}
           >
-            <Save size={18} />
+            <Save size={16} />
             Guardar escaneo
           </Button>
         )}
@@ -164,27 +182,26 @@ function AnalyzePage() {
       <CssInput value={css} onChange={handleCssChange} isAnalyzing={isAnalyzing} />
 
       {analysisError && (
-        <div className="rounded-md bg-destructive/10 p-3">
-          <p className="text-sm text-destructive">{analysisError}</p>
+        <div className="rounded-lg p-3" style={{ background: '#fbe8e6', border: '1px solid rgba(158, 43, 37, 0.2)' }}>
+          <p className="text-sm text-[#9e2b25]">{analysisError}</p>
         </div>
       )}
 
       {showSaveForm && result && (
-        <Card className="p-6 bg-blue-50 border-blue-200">
-          <h3 className="text-lg font-semibold text-gray-900 mb-4">
+        <Card className="p-6" style={{ background: '#e5f2ec', border: '1px solid rgba(0, 108, 72, 0.15)' }}>
+          <h3 className="text-base font-semibold text-[#1a2e23] mb-4">
             Guardar Escaneo
           </h3>
           <div className="space-y-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
+              <label className="block text-sm font-medium text-[#1a2e23] mb-1">
                 Proyecto
               </label>
               <select
-                value={saveFormData.projectId}
-                onChange={(e) =>
-                  setSaveFormData({ ...saveFormData, projectId: e.target.value })
-                }
-                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                value={selectedProjectId}
+                onChange={(e) => setSelectedProjectId(e.target.value)}
+                className="w-full px-3 py-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#006c48] bg-white text-[#0b1f16]"
+                style={{ border: '1px solid rgba(11, 31, 22, 0.14)' }}
               >
                 <option value="">Selecciona un proyecto</option>
                 {projects.map((p) => (
@@ -195,30 +212,20 @@ function AnalyzePage() {
               </select>
             </div>
 
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Etiqueta del Escaneo
-              </label>
-              <input
-                type="text"
-                value={saveFormData.label}
-                onChange={(e) =>
-                  setSaveFormData({ ...saveFormData, label: e.target.value })
-                }
-                placeholder="ej: Versión 1.0, Revisión Q2..."
-                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-            </div>
+            {autoLabel && (
+              <div className="flex items-center gap-2 px-3 py-2 rounded-lg" style={{ background: 'rgba(255,255,255,0.7)', border: '1px solid rgba(11, 31, 22, 0.08)' }}>
+                <span className="text-xs text-[#52695b]">Etiqueta:</span>
+                <span className="text-sm font-medium text-[#1a2e23]">{autoLabel}</span>
+              </div>
+            )}
 
             {savingStatus.message && (
               <div
-                className={`text-sm p-2 rounded ${
-                  savingStatus.state === 'error'
-                    ? 'bg-red-100 text-red-800'
-                    : savingStatus.state === 'success'
-                      ? 'bg-green-100 text-green-800'
-                      : 'bg-gray-100 text-gray-800'
-                }`}
+                className="text-sm p-2 rounded-lg"
+                style={{
+                  background: savingStatus.state === 'error' ? '#fbe8e6' : savingStatus.state === 'success' ? '#e5f2ec' : '#f0f2f1',
+                  color: savingStatus.state === 'error' ? '#9e2b25' : savingStatus.state === 'success' ? '#006c48' : '#1a2e23',
+                }}
               >
                 {savingStatus.message}
               </div>
@@ -229,16 +236,19 @@ function AnalyzePage() {
                 onClick={handleSaveScan}
                 disabled={
                   savingStatus.state === 'loading' ||
-                  !saveFormData.projectId ||
-                  !saveFormData.label.trim()
+                  !selectedProjectId ||
+                  !autoLabel
                 }
                 className="flex-1"
+                style={{ background: '#012d1d' }}
               >
                 {savingStatus.state === 'loading' ? 'Guardando...' : 'Guardar'}
               </Button>
               <Button
                 onClick={() => {
                   setShowSaveForm(false)
+                  setSelectedProjectId('')
+                  setAutoLabel('')
                   setSavingStatus({ state: 'idle', message: '' })
                 }}
                 variant="outline"
@@ -253,36 +263,31 @@ function AnalyzePage() {
 
       {result && (
         <Tabs defaultValue="overview" onValueChange={handleTabChange}>
-          <TabsList className="grid w-full grid-cols-7">
-            <TabsTrigger value="overview" className="gap-1.5 text-xs">
-              <LayoutDashboard className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">Resumen</span>
-            </TabsTrigger>
-            <TabsTrigger value="hardcoded" className="gap-1.5 text-xs">
-              <Palette className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">Hardcodeados</span>
-            </TabsTrigger>
-            <TabsTrigger value="duplicates" className="gap-1.5 text-xs">
-              <Copy className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">Duplicados</span>
-            </TabsTrigger>
-            <TabsTrigger value="specificity" className="gap-1.5 text-xs">
-              <BarChart3 className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">Especificidad</span>
-            </TabsTrigger>
-            <TabsTrigger value="typography" className="gap-1.5 text-xs">
-              <Type className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">Tipografia</span>
-            </TabsTrigger>
-            <TabsTrigger value="w3c" className="gap-1.5 text-xs">
-              <Globe className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">W3C</span>
-            </TabsTrigger>
-            <TabsTrigger value="ds" className="gap-1.5 text-xs">
-              <Component className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">Design System</span>
-            </TabsTrigger>
-          </TabsList>
+          <div className="flex items-center gap-1 overflow-x-auto pb-px" style={{ borderBottom: '1px solid rgba(11, 31, 22, 0.08)' }}>
+            {[
+              { value: 'overview', icon: LayoutDashboard, label: 'Resumen' },
+              { value: 'hardcoded', icon: Palette, label: 'Hardcodeados' },
+              { value: 'duplicates', icon: Copy, label: 'Duplicados' },
+              { value: 'specificity', icon: BarChart3, label: 'Especificidad' },
+              { value: 'typography', icon: Type, label: 'Tipografía' },
+              { value: 'w3c', icon: Globe, label: 'W3C' },
+              { value: 'ds', icon: Component, label: 'Design System' },
+            ].map(({ value, icon: Icon, label }) => (
+              <TabsList key={value} className="bg-transparent p-0 h-auto">
+                <TabsTrigger
+                  value={value}
+                  className="relative px-3 py-3 text-[12px] font-medium transition-colors bg-transparent rounded-none shadow-none data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:text-[#0b1f16] text-[#52695b] gap-1.5"
+                >
+                  <Icon className="h-3.5 w-3.5" />
+                  {label}
+                  <span
+                    className="absolute bottom-0 left-0 right-0 h-0.5 transition-opacity"
+                    style={{ background: '#006c48', opacity: 'var(--tab-active, 0)' }}
+                  />
+                </TabsTrigger>
+              </TabsList>
+            ))}
+          </div>
 
           <div className="mt-6">
             <TabsContent value="overview">
@@ -335,11 +340,11 @@ function AnalyzePage() {
 
       {!result && !analysisError && (
         <div className="text-center py-16">
-          <Code className="h-16 w-16 mx-auto mb-4 text-muted-foreground/30" />
-          <h2 className="text-lg font-semibold text-muted-foreground mb-2">
+          <Code className="h-16 w-16 mx-auto mb-4 text-[#52695b]/30" />
+          <h2 className="text-lg font-semibold text-[#52695b] mb-2">
             Pega o arrastra tu CSS para empezar
           </h2>
-          <p className="text-sm text-muted-foreground max-w-md mx-auto">
+          <p className="text-sm text-[#8a9b92] max-w-md mx-auto">
             KPY CSS Analyzer evaluará tu CSS compilado y te mostrará métricas
             de calidad, valores hardcodeados, duplicados, validación W3C y
             cobertura de Design System.
@@ -355,8 +360,8 @@ export default function App() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center min-h-screen">
-        <p className="text-gray-500">Cargando...</p>
+      <div className="flex items-center justify-center min-h-screen" style={{ background: '#f6f7f5' }}>
+        <p className="text-[#52695b]">Cargando...</p>
       </div>
     )
   }

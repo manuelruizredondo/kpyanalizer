@@ -236,10 +236,10 @@ function CategoryCard({ icon: Icon, label, category }: {
   category: DsCategoryResult
 }) {
   const coverageColor = category.coverage >= 80
-    ? "text-green-600"
+    ? "text-[#006c48]"
     : category.coverage >= 50
-      ? "text-yellow-600"
-      : "text-red-600"
+      ? "text-[#a67c00]"
+      : "text-[#9e2b25]"
 
   return (
     <Card>

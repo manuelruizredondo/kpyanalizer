@@ -11,10 +11,10 @@ interface MetricCardProps {
 }
 
 const variantColors = {
-  default: "text-foreground",
-  warning: "text-yellow-600",
-  danger: "text-red-600",
-  success: "text-green-600",
+  default: "text-[#1a2e23]",
+  warning: "text-[#a67c00]",
+  danger: "text-[#9e2b25]",
+  success: "text-[#006c48]",
 }
 
 export function MetricCard({ label, value, icon: Icon, description, variant = "default" }: MetricCardProps) {

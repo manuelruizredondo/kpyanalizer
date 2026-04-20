@@ -2,53 +2,27 @@ import { useMemo } from "react"
 import type { AnalysisResult, HardcodedValue } from "@/types/analysis"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
+import { InfoTooltip } from "@/components/ui/InfoTooltip"
+import { C } from "@/lib/colors"
+import { classifyFamily, getWeightLabel } from "@/lib/font-utils"
+import type { FamilyTier } from "@/lib/font-utils"
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell,
   AreaChart, Area, Legend,
 } from "recharts"
-import { Type, Bold, AlertTriangle, Info, CheckCircle, XCircle, Minus } from "lucide-react"
+import { Type, Bold, AlertTriangle, CheckCircle, XCircle, Minus } from "lucide-react"
 
 interface TypographyTabProps {
   result: AnalysisResult
 }
 
+// Map shared palette to local names used in this file
 const COLORS = {
-  green: "#006c48",
-  lightGreen1: "#2a9d6e",
-  lightGreen2: "#5cc49a",
-  yellow: "#a67c00",
-  red: "#9e2b25",
-  dark: "#1a2e23",
-  muted: "#3d5a4a",
-  gray: "#94a3b8",
-}
-
-// ─── Design System font ──────────────────────────────────────────
-// The approved font family — everything else custom is flagged for elimination
-const DS_FONT_KEYWORD = "suisse"
-
-// ─── Info Tooltip ──────────────────────────────────────────────────
-function InfoTooltip({ text }: { text: string }) {
-  return (
-    <span className="relative group inline-flex ml-1">
-      <Info size={13} className="text-[#3d5a4a]/50 hover:text-[#006c48] cursor-help transition-colors" />
-      <span className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-64 rounded-lg bg-[#1a2e23] text-white text-xs leading-relaxed px-3 py-2 opacity-0 group-hover:opacity-100 transition-opacity z-50 shadow-lg">
-        {text}
-        <span className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-[#1a2e23]" />
-      </span>
-    </span>
-  )
-}
-
-// ─── Weight label helper ──────────────────────────────────────────
-function getWeightLabel(normalized: string): string {
-  const map: Record<string, string> = {
-    "100": "Thin", "200": "Extra Light", "300": "Light",
-    "400": "Normal", "500": "Medium", "600": "Semi Bold",
-    "700": "Bold", "800": "Extra Bold", "900": "Black",
-  }
-  return map[normalized] || normalized
+  ...C,
+  lightGreen1: C.green2,
+  lightGreen2: C.green3,
+  gray: C.olive,
 }
 
 function getWeightBarColor(normalized: string): string {
@@ -58,21 +32,6 @@ function getWeightBarColor(normalized: string): string {
   if (n <= 500) return COLORS.lightGreen1
   if (n <= 700) return COLORS.green
   return COLORS.dark
-}
-
-// ─── Font family classification (3 tiers) ─────────────────────────
-type FamilyTier = "ds" | "generic" | "eliminate"
-
-const GENERIC_FAMILIES = new Set([
-  "serif", "sans-serif", "monospace", "cursive", "fantasy",
-  "system-ui", "ui-serif", "ui-sans-serif", "ui-monospace", "ui-rounded",
-  "emoji", "math", "fangsong",
-])
-
-function classifyFamily(normalized: string): FamilyTier {
-  if (GENERIC_FAMILIES.has(normalized)) return "generic"
-  if (normalized.includes(DS_FONT_KEYWORD)) return "ds"
-  return "eliminate"
 }
 
 const TIER_CONFIG: Record<FamilyTier, { label: string; color: string; bg: string; icon: typeof CheckCircle }> = {
@@ -200,7 +159,7 @@ export function TypographyTab({ result }: TypographyTabProps) {
 
         <Card className="p-4">
           <div className="flex items-center gap-2 mb-1">
-            <Minus size={16} className="text-[#94a3b8]" />
+            <Minus size={16} className="text-[#52695b]" />
             <p className="text-xs text-[#3d5a4a]">Genericas</p>
           </div>
           <p className="text-2xl font-bold text-[#3d5a4a]">{classified.generic.length}</p>
