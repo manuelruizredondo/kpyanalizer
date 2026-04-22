@@ -49,7 +49,6 @@ import {
   XCircle,
   CheckCircle,
   Plus,
-  GripVertical,
   Pencil,
   Trash2,
   X,
@@ -1003,7 +1002,6 @@ export function DashboardPage() {
                     const offGridCount = offGrid.reduce((s, v) => s + v.count, 0)
 
                     const zTotal = (ad.zIndexValues || []).reduce((s, v) => s + v.count, 0)
-                    const zUnique = (ad.zIndexValues || []).length
                     const zLayers = new Set((ad.zIndexValues || []).map(z => { const n = parseInt(z.value, 10); return isNaN(n) ? -1 : Math.min(Math.floor(Math.abs(n) / 1000), 9) })).size
                     const zNegative = (ad.zIndexValues || []).filter(z => parseInt(z.value, 10) < 0)
                     const zOver9999 = (ad.zIndexValues || []).filter(z => parseInt(z.value, 10) > 9999)
@@ -1539,7 +1537,7 @@ export function DashboardPage() {
                             </tr>
                           </thead>
                           <tbody>
-                            {scans.map((scan, i) => {
+                            {scans.map((scan) => {
                               const scoreColor = scan.health_score >= 70 ? '#006c48' : scan.health_score >= 40 ? '#a67c00' : '#9e2b25'
                               return (
                                 <tr key={scan.id} className="border-b last:border-0" style={{ borderColor: 'rgba(11, 31, 22, 0.05)' }}>
@@ -1858,7 +1856,9 @@ export function DashboardPage() {
                       </div>
                     ) : (() => {
                       // Build unified list: manual items first (reorderable), then auto items
-                      type UnifiedItem = { kind: 'manual'; item: ActionItem; manualIdx: number } | { kind: 'auto'; title: string; value: string; severity: string; description: string }
+                      type UnifiedItem =
+                        | { kind: 'manual'; item: ActionItem; manualIdx: number }
+                        | { kind: 'auto'; title: string; value: string; severity: string; description: string; detailHeaders?: string[]; detailRows?: AutoDetail[] }
                       const unified: UnifiedItem[] = [
                         ...actionItems.map((item, i) => ({ kind: 'manual' as const, item, manualIdx: i })),
                         ...autoItems.map((a) => ({ kind: 'auto' as const, ...a })),
