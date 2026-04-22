@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import type { AnalysisResult, HardcodedValue } from '@/types/analysis'
+import type { AnalysisResult } from '@/types/analysis'
 import { Card } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -9,7 +9,7 @@ import { C } from '@/lib/colors'
 import { classifyFamily } from '@/lib/font-utils'
 import {
   Loader2, AlertTriangle, CheckCircle, XCircle,
-  Palette, Type, Ruler, Layers, Zap, ShieldCheck, Eye,
+  Palette, Type, Ruler, Layers, Zap, ShieldCheck, Eye, Info, Underline,
 } from 'lucide-react'
 
 // ─── Helpers ──────────────────────────────────────────────────────
@@ -48,6 +48,81 @@ function extractCssVars(raw: string): Map<string, string> {
 /** Normalize a color value for comparison (lowercase, strip spaces) */
 function normColor(v: string): string {
   return v.toLowerCase().replace(/\s+/g, '').replace(/0\./g, '.')
+}
+
+/** Extract rules that produce an underline-like visual (text-decoration: underline,
+ * text-decoration-line: underline, or a non-empty border-bottom). Returns one
+ * entry per comma-separated selector so every class is listed individually.
+ */
+type UnderlineRule = {
+  selector: string
+  property: 'text-decoration' | 'text-decoration-line' | 'border-bottom'
+  value: string
+  line: number
+}
+function extractUnderlineRules(raw: string): UnderlineRule[] {
+  const rules: UnderlineRule[] = []
+  // Match: prelude { ... } — non-greedy, ignores nested braces at the one level we need
+  const ruleRe = /([^{}]+?)\{([^{}]*)\}/g
+  let m: RegExpExecArray | null
+  while ((m = ruleRe.exec(raw)) !== null) {
+    const prelude = m[1].trim()
+    const body = m[2]
+    if (!prelude || prelude.startsWith('@')) continue // skip at-rules preludes
+
+    // Line number of the prelude start
+    const startIdx = m.index
+    const line = raw.slice(0, startIdx).split('\n').length
+
+    // Find declarations we care about
+    const decls: { property: UnderlineRule['property']; value: string }[] = []
+    const tdRe = /(?:^|;|\s)text-decoration(-line)?\s*:\s*([^;!}]+)/gi
+    let d: RegExpExecArray | null
+    while ((d = tdRe.exec(body)) !== null) {
+      const value = d[2].trim().toLowerCase()
+      if (/\bunderline\b/.test(value)) {
+        decls.push({ property: d[1] ? 'text-decoration-line' : 'text-decoration', value: d[2].trim() })
+      }
+    }
+    const bbRe = /(?:^|;|\s)border-bottom\s*:\s*([^;!}]+)/gi
+    while ((d = bbRe.exec(body)) !== null) {
+      const value = d[1].trim()
+      const v = value.toLowerCase()
+      // Ignore "none" and zero-width borders
+      if (v === 'none' || v === '0' || v === '0px' || v === 'initial' || v === 'unset' || /^0\s+/.test(v)) continue
+      decls.push({ property: 'border-bottom', value })
+    }
+    if (decls.length === 0) continue
+
+    // Split comma-separated selectors so each class appears on its own row
+    const selectors = prelude
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .split(',')
+      .map(s => s.trim())
+      .filter(Boolean)
+
+    for (const sel of selectors) {
+      // Skip selectors whose rightmost target is a form field (input / textarea / select).
+      // The underline there is either native UA styling or irrelevant to link/button audits.
+      if (targetsFormField(sel)) continue
+      for (const decl of decls) {
+        rules.push({ selector: sel, property: decl.property, value: decl.value, line })
+      }
+    }
+  }
+  return rules
+}
+
+/** True if the rightmost simple selector targets <input>, <textarea> or <select>. */
+function targetsFormField(sel: string): boolean {
+  // Take the rightmost compound selector (after descendant/child/sibling combinators)
+  const parts = sel.split(/\s*[\s>+~]\s*/).filter(Boolean)
+  const rightmost = parts.length > 0 ? parts[parts.length - 1] : sel
+  // Strip pseudo-classes and pseudo-elements so "input:focus" / "input::placeholder" match
+  const base = rightmost.replace(/::?[\w-]+(\([^)]*\))?/g, '')
+  // Match element name at the start of the compound selector, not followed by - or a-z
+  // so "input-group" or "textarea-like" (if they existed) wouldn't match
+  return /^(input|textarea|select)(?![-a-z])/i.test(base)
 }
 
 // ─── Main Component ──────────────────────────────────────────────
@@ -98,6 +173,10 @@ export function ConfrontarTab({ hg5Result, userResult, hg5Loading, hg5Error, onR
 function AuditContent({ hg5, user, onRetry }: { hg5: AnalysisResult; user: AnalysisResult; onRetry: () => void }) {
   const [showAllOverrides, setShowAllOverrides] = useState(false)
   const [showAllImportants, setShowAllImportants] = useState(false)
+  const [showAllColors, setShowAllColors] = useState(false)
+  const [showAllSpacing, setShowAllSpacing] = useState(false)
+  const [showAllUnderlines, setShowAllUnderlines] = useState(false)
+  const [showHg5Underlines, setShowHg5Underlines] = useState(false)
 
   // ══════════════════════════════════════════════════════════════════
   // ANALYSIS: compute all audit data
@@ -214,6 +293,10 @@ function AuditContent({ hg5, user, onRetry }: { hg5: AnalysisResult; user: Analy
       }
     }
 
+    // ── Underline audit ──
+    const userUnderlines = extractUnderlineRules(user.raw)
+    const hg5Underlines = extractUnderlineRules(hg5.raw)
+
     // ── Compliance score ──
     const totalUserColors = user.colors.length || 1
     const totalUserFamilies = user.fontFamilies.length || 1
@@ -242,6 +325,7 @@ function AuditContent({ hg5, user, onRetry }: { hg5: AnalysisResult; user: Analy
       colorCompliance, familyCompliance, weightCompliance, sizeCompliance, spacingCompliance,
       overallCompliance,
       colorSubstitutions, spacingSubstitutions, fontSizeSubstitutions,
+      userUnderlines, hg5Underlines,
     }
   }, [hg5, user])
 
@@ -249,16 +333,16 @@ function AuditContent({ hg5, user, onRetry }: { hg5: AnalysisResult; user: Analy
     hg5Vars, userVars,
     hg5ColorVars, hg5SpacingVars, hg5FontVars,
     authorizedColors, unauthorizedColors,
-    authorizedFamilies, unauthorizedFamilies,
-    authorizedWeights, unauthorizedWeights,
-    authorizedSizes, unauthorizedSizes,
+    unauthorizedFamilies,
+    unauthorizedWeights,
+    unauthorizedSizes,
     authorizedSpacing, unauthorizedSpacing,
-    unauthorizedZ,
     overriddenSelectors,
     importantsInUser,
     colorCompliance, familyCompliance, weightCompliance, sizeCompliance, spacingCompliance,
     overallCompliance,
     colorSubstitutions, spacingSubstitutions, fontSizeSubstitutions,
+    userUnderlines, hg5Underlines,
   } = audit
 
   const compSev = (v: number): 'good' | 'warn' | 'bad' => v >= 80 ? 'good' : v >= 50 ? 'warn' : 'bad'
@@ -337,7 +421,7 @@ function AuditContent({ hg5, user, onRetry }: { hg5: AnalysisResult; user: Analy
           <div className="space-y-3">
             <p className="text-xs font-semibold text-[#9e2b25] uppercase tracking-wider">Colores fuera de la guía ({unauthorizedColors.length})</p>
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
-              {[...unauthorizedColors].sort((a, b) => b.count - a.count).slice(0, 30).map((c, i) => (
+              {[...unauthorizedColors].sort((a, b) => b.count - a.count).slice(0, showAllColors ? undefined : 30).map((c, i) => (
                 <div key={i} className="flex items-center gap-2 p-2 rounded-lg border" style={{ borderColor: 'rgba(158, 43, 37, 0.15)' }}>
                   <div className="w-8 h-8 rounded border border-[#f0f2f1] shrink-0" style={{ backgroundColor: c.normalized }} />
                   <div className="min-w-0 flex-1">
@@ -351,7 +435,16 @@ function AuditContent({ hg5, user, onRetry }: { hg5: AnalysisResult; user: Analy
               ))}
             </div>
             {unauthorizedColors.length > 30 && (
-              <p className="text-xs text-[#3d5a4a]">+{unauthorizedColors.length - 30} más...</p>
+              <div className="mt-2 text-center">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="text-xs h-7"
+                  onClick={() => setShowAllColors(!showAllColors)}
+                >
+                  {showAllColors ? 'Mostrar solo 30' : `Ver todos (${unauthorizedColors.length})`}
+                </Button>
+              </div>
             )}
           </div>
         )}
@@ -498,15 +591,26 @@ function AuditContent({ hg5, user, onRetry }: { hg5: AnalysisResult; user: Analy
           <div>
             <p className="text-xs font-semibold text-[#9e2b25] mb-2">Spacing fuera de HG5</p>
             <div className="flex flex-wrap gap-1.5">
-              {[...unauthorizedSpacing].sort((a, b) => b.count - a.count).slice(0, 30).map((s, i) => (
+              {[...unauthorizedSpacing].sort((a, b) => b.count - a.count).slice(0, showAllSpacing ? undefined : 30).map((s, i) => (
                 <span key={i} className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-mono" style={{
                   background: '#fef2f1', color: C.red,
                 }}>
                   {s.normalized} <span className="opacity-50">({s.count}x)</span>
                 </span>
               ))}
-              {unauthorizedSpacing.length > 30 && <span className="text-[10px] text-[#3d5a4a] self-center">+{unauthorizedSpacing.length - 30}</span>}
             </div>
+            {unauthorizedSpacing.length > 30 && (
+              <div className="mt-2 text-center">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="text-xs h-7"
+                  onClick={() => setShowAllSpacing(!showAllSpacing)}
+                >
+                  {showAllSpacing ? 'Mostrar solo 30' : `Ver todos (${unauthorizedSpacing.length})`}
+                </Button>
+              </div>
+            )}
           </div>
         )}
 
@@ -911,6 +1015,107 @@ function AuditContent({ hg5, user, onRetry }: { hg5: AnalysisResult; user: Analy
           </Card>
         )
       })()}
+
+      {/* ══════════════════════════════════════════════════════════════
+           7.5 UNDERLINES (text-decoration / border-bottom)
+         ══════════════════════════════════════════════════════════════ */}
+      <Card className="p-6">
+        <SectionTitle
+          icon={Underline}
+          title="Subrayados (text-decoration / border-bottom)"
+          tooltip="Clases que aplican un subrayado visual: text-decoration: underline, text-decoration-line: underline o border-bottom no nulo (como .link-line). Útil para auditar enlaces, botones terciarios y estados activos."
+          count={userUnderlines.length}
+          severity={userUnderlines.length === 0 ? 'good' : userUnderlines.length > 30 ? 'warn' : 'good'}
+        />
+
+        <p className="text-xs text-[#3d5a4a] mb-4">
+          {userUnderlines.length > 0
+            ? <>Se detectaron <strong>{userUnderlines.length}</strong> reglas con subrayado en tu CSS (incluye <code className="px-1 rounded bg-[#f0f2f1] text-[11px]">text-decoration</code>, <code className="px-1 rounded bg-[#f0f2f1] text-[11px]">text-decoration-line</code> y <code className="px-1 rounded bg-[#f0f2f1] text-[11px]">border-bottom</code> no nulos).</>
+            : <>No se detectaron reglas de subrayado en tu CSS.</>}
+        </p>
+
+        {userUnderlines.length > 0 && (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b" style={{ borderColor: 'rgba(11, 31, 22, 0.08)' }}>
+                  <th className="text-left py-2 pr-3 text-[11px] font-medium text-[#52695b] uppercase tracking-wider">Selector</th>
+                  <th className="text-left py-2 pr-3 text-[11px] font-medium text-[#52695b] uppercase tracking-wider">Propiedad</th>
+                  <th className="text-left py-2 pr-3 text-[11px] font-medium text-[#52695b] uppercase tracking-wider">Valor</th>
+                  <th className="text-right py-2 text-[11px] font-medium text-[#52695b] uppercase tracking-wider">Línea</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(showAllUnderlines ? userUnderlines : userUnderlines.slice(0, 50)).map((r, i) => (
+                  <tr key={i} className="border-b last:border-0" style={{ borderColor: 'rgba(11, 31, 22, 0.05)' }}>
+                    <td className="py-1.5 pr-3">
+                      <span className="text-xs font-mono text-[#1a2e23] truncate block max-w-[360px]">{r.selector}</span>
+                    </td>
+                    <td className="py-1.5 pr-3 text-xs font-mono text-[#006c48]">{r.property}</td>
+                    <td className="py-1.5 pr-3 text-xs font-mono text-[#3d5a4a] truncate max-w-[240px]">{r.value}</td>
+                    <td className="py-1.5 text-right text-xs text-[#3d5a4a]">{r.line}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {userUnderlines.length > 50 && (
+              <div className="mt-3 text-center">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="text-xs h-7"
+                  onClick={() => setShowAllUnderlines(!showAllUnderlines)}
+                >
+                  {showAllUnderlines ? 'Mostrar solo 50' : `Ver todos (${userUnderlines.length})`}
+                </Button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* HG5 reference */}
+        {hg5Underlines.length > 0 && (
+          <div className="mt-5 pt-4 border-t border-[#f0f2f1]">
+            <div className="flex items-center gap-2 mb-2">
+              <p className="text-[10px] uppercase tracking-wider font-semibold text-[#3d5a4a]">Referencia HG5 ({hg5Underlines.length} reglas con subrayado)</p>
+              <Button
+                size="sm"
+                variant="outline"
+                className="text-[10px] h-6 px-2 ml-auto"
+                onClick={() => setShowHg5Underlines(!showHg5Underlines)}
+              >
+                {showHg5Underlines ? 'Ocultar' : 'Ver'}
+              </Button>
+            </div>
+            {showHg5Underlines && (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b" style={{ borderColor: 'rgba(11, 31, 22, 0.08)' }}>
+                      <th className="text-left py-2 pr-3 text-[11px] font-medium text-[#52695b] uppercase tracking-wider">Selector HG5</th>
+                      <th className="text-left py-2 pr-3 text-[11px] font-medium text-[#52695b] uppercase tracking-wider">Propiedad</th>
+                      <th className="text-left py-2 pr-3 text-[11px] font-medium text-[#52695b] uppercase tracking-wider">Valor</th>
+                      <th className="text-right py-2 text-[11px] font-medium text-[#52695b] uppercase tracking-wider">Línea</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {hg5Underlines.map((r, i) => (
+                      <tr key={i} className="border-b last:border-0" style={{ borderColor: 'rgba(11, 31, 22, 0.05)' }}>
+                        <td className="py-1.5 pr-3">
+                          <span className="text-xs font-mono text-[#006c48] truncate block max-w-[360px]">{r.selector}</span>
+                        </td>
+                        <td className="py-1.5 pr-3 text-xs font-mono text-[#3d5a4a]">{r.property}</td>
+                        <td className="py-1.5 pr-3 text-xs font-mono text-[#3d5a4a] truncate max-w-[240px]">{r.value}</td>
+                        <td className="py-1.5 text-right text-xs text-[#3d5a4a]">{r.line}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+      </Card>
 
       {/* ══════════════════════════════════════════════════════════════
            8. RESUMEN COMPARATIVO RÁPIDO

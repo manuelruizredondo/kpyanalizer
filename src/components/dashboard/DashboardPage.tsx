@@ -357,16 +357,21 @@ export function DashboardPage() {
     if (hg5FetchedRef.current || hg5Loading) return
     setHg5Loading(true)
     setHg5Error(null)
+
+    // Serve HG5 CSS from local static files under /public/hg5/
+    // (refresh via `npm run update-hg5`). Avoids runtime network dependency
+    // and TLS/firewall issues that broke the live fetch.
+    const base = '/hg5'
+
+    const fetchCss = async (path: string): Promise<string> => {
+      const resp = await fetch(`${base}/${path}`, { cache: 'no-store' })
+      if (!resp.ok) throw new Error(`${path}: ${resp.status} ${resp.statusText || ''}`.trim())
+      return await resp.text()
+    }
+
     try {
-      // Use Vite proxy in dev to avoid CORS, fallback to direct URL in production
-      const base = import.meta.env.DEV ? '/api/hg5' : 'https://hg5.netlify.app'
-      const [outputResp, duttiResp] = await Promise.all([
-        fetch(`${base}/output.css`),
-        fetch(`${base}/themes/dutti.css`),
-      ])
-      if (!outputResp.ok) throw new Error(`output.css: ${outputResp.status}`)
-      if (!duttiResp.ok) throw new Error(`dutti.css: ${duttiResp.status}`)
-      const [outputCss, duttiCss] = await Promise.all([outputResp.text(), duttiResp.text()])
+      const outputCss = await fetchCss('output.css')
+      const duttiCss = await fetchCss('themes/dutti.css')
       const combined = `/* === output.css === */\n${outputCss}\n\n/* === dutti.css === */\n${duttiCss}`
       const result = analyzeCss(combined)
       setHg5Result(result)
@@ -380,7 +385,7 @@ export function DashboardPage() {
   }
 
   useEffect(() => {
-    if ((activeTab === 'confrontar' || activeTab === 'resumen') && !hg5FetchedRef.current) {
+    if (activeTab === 'resumen' && !hg5FetchedRef.current) {
       loadHg5()
     }
   }, [activeTab])
@@ -619,7 +624,6 @@ export function DashboardPage() {
 
   const TABS = [
     { id: 'resumen', label: 'Resumen' },
-    { id: 'confrontar', label: 'Confrontar HG5' },
     { id: 'plan', label: 'Plan de Acción' },
   ]
 
@@ -686,7 +690,7 @@ export function DashboardPage() {
       {/* ═══════════════════════════════════════════════════════════════════
           MAIN CONTENT
           ═══════════════════════════════════════════════════════════════════ */}
-      <div className="flex-1 px-8 py-8 max-w-[1440px] mx-auto w-full">
+      <div className={`flex-1 px-8 py-8 w-full ${activeTab === 'resumen' ? '' : 'max-w-[1440px] mx-auto'}`}>
         {scansLoading ? (
           <div className="flex items-center justify-center py-24 gap-3">
             <Loader2 className="animate-spin text-[#006c48]" size={24} />
@@ -697,9 +701,53 @@ export function DashboardPage() {
             <div className="space-y-8">
               {/* ─── RESUMEN TAB ─── */}
               {activeTab === 'resumen' && (
-                <div className="space-y-8">
+                <div className="flex gap-6">
+                  {/* ── STICKY LEFT SHORTCUT MENU ── */}
+                  <aside
+                    className="w-52 shrink-0 hidden lg:block self-start sticky"
+                    style={{ top: '110px', maxHeight: 'calc(100vh - 130px)', overflowY: 'auto' }}
+                  >
+                    <nav
+                      className="space-y-0.5 py-3 pr-2 border-r"
+                      style={{ borderColor: 'rgba(11, 31, 22, 0.08)' }}
+                    >
+                      <p className="text-[10px] uppercase tracking-[0.08em] font-semibold text-[#52695b] mb-2 px-3">Secciones</p>
+                      {[
+                        { id: 'sec-health',        label: 'Health Score',      icon: Zap },
+                        { id: 'sec-metrics',       label: 'Métricas',          icon: Hash },
+                        { id: 'sec-typography',    label: 'Tipografía',        icon: Type },
+                        { id: 'sec-hardcoded',     label: 'Hardcodeados',      icon: Palette },
+                        { id: 'sec-weights',       label: 'Font-Weights',      icon: Ruler },
+                        { id: 'sec-hg5-evolution', label: 'Cumplimiento HG5',  icon: ShieldCheck },
+                        { id: 'sec-legacy',        label: 'Legacy',            icon: AlertTriangle },
+                        { id: 'sec-evolution',     label: 'Evolución',         icon: Eye },
+                        { id: 'sec-history',       label: 'Historial',         icon: FileText },
+                        { id: 'sec-hg5-audit',     label: 'Confrontación HG5', icon: ShieldCheck },
+                      ].map((s) => (
+                        <a
+                          key={s.id}
+                          href={`#${s.id}`}
+                          onClick={(e) => {
+                            e.preventDefault()
+                            const el = document.getElementById(s.id)
+                            if (el) {
+                              const y = el.getBoundingClientRect().top + window.pageYOffset - 110
+                              window.scrollTo({ top: y, behavior: 'smooth' })
+                            }
+                          }}
+                          className="group flex items-center gap-2 px-3 py-1.5 rounded-lg text-[12px] text-[#3d5a4a] hover:bg-[#e0f5ec] hover:text-[#006c48] transition-colors"
+                        >
+                          <s.icon size={13} className="shrink-0 opacity-60 group-hover:opacity-100" />
+                          <span className="truncate">{s.label}</span>
+                        </a>
+                      ))}
+                    </nav>
+                  </aside>
+
+                  {/* ── MAIN RESUMEN CONTENT ── */}
+                  <div className="flex-1 min-w-0 space-y-8">
                   {/* Hero: CSS Health Score */}
-                  <Card className="p-6">
+                  <Card id="sec-health" className="p-6" style={{ scrollMarginTop: '110px' }}>
                     <div className="flex items-center justify-between mb-2">
                       <div>
                         <div className="flex items-center gap-2">
@@ -742,7 +790,7 @@ export function DashboardPage() {
                   </Card>
 
                   {/* Metrics Cards */}
-                  <div>
+                  <div id="sec-metrics" style={{ scrollMarginTop: '110px' }}>
                     <SectionHeader title="Metricas del ultimo escaneo" tooltip="Resumen de los KPIs clave del ultimo analisis CSS. Las flechas muestran la diferencia con el escaneo anterior." />
                     <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
                       <MetricCard icon={FileText} label="Peso" value={(latestScan.file_size / 1024).toFixed(1)} unit="KB" delta={previousScan ? +((latestScan.file_size - previousScan.file_size) / 1024).toFixed(1) : null} invertDelta tooltip="Tamano del archivo CSS en kilobytes. Un CSS mas ligero mejora el rendimiento de carga de la pagina." />
@@ -781,7 +829,7 @@ export function DashboardPage() {
                     const w3cVal = latestDetail?.w3c_validation
 
                     return (
-                      <div className="space-y-6">
+                      <div id="sec-typography" className="space-y-6" style={{ scrollMarginTop: '110px' }}>
                         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                           {/* Typography Card */}
                           <Card className="p-6">
@@ -962,7 +1010,7 @@ export function DashboardPage() {
                     const zOutOfScale = (ad.zIndexValues || []).filter(z => { const n = parseInt(z.value, 10); return !isNaN(n) && (n % 1000 !== 0 && n !== 0 && n !== 1 && n !== -1) })
 
                     return (
-                      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                      <div id="sec-hardcoded" className="grid grid-cols-1 lg:grid-cols-3 gap-6" style={{ scrollMarginTop: '110px' }}>
                         {/* Colores Hardcodeados */}
                         <Card className="p-6">
                           <div className="flex items-center gap-2 mb-4">
@@ -1090,7 +1138,7 @@ export function DashboardPage() {
                     const CONSOLIDATION: Record<number, number> = { 200: 100, 300: 100, 500: 400, 800: 700, 900: 700 }
 
                     return (
-                      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                      <div id="sec-weights" className="grid grid-cols-1 lg:grid-cols-2 gap-6" style={{ scrollMarginTop: '110px' }}>
                         {/* Weight list */}
                         <Card className="p-6">
                           <div className="flex items-center gap-2 mb-4">
@@ -1179,7 +1227,7 @@ export function DashboardPage() {
 
                   {/* ── Cumplimiento HG5 (Evolution) ── */}
                   {hg5Result && hg5EvolutionData && scans.length > 0 && (
-                    <>
+                    <div id="sec-hg5-evolution" style={{ scrollMarginTop: '110px' }}>
                       <SectionHeader title="Cumplimiento HG5" tooltip="Evolución de la adherencia de tu CSS al framework HG5 a lo largo de los escaneos. Las líneas punteadas representan los valores de referencia de HG5." />
 
                       {/* Compliance score over time */}
@@ -1318,12 +1366,12 @@ export function DashboardPage() {
                           </ResponsiveContainer>
                         </Card>
                       </div>
-                    </>
+                    </div>
                   )}
 
                   {/* ── Reduccion de Legacy ── */}
                   {scans.length > 1 && (
-                    <>
+                    <div id="sec-legacy" style={{ scrollMarginTop: '110px' }}>
                       <SectionHeader title="Reduccion de Legacy" tooltip="Seguimiento de valores legacy (hardcodeados, fuentes no autorizadas) a lo largo de los escaneos. El objetivo es llevarlos a cero." />
                       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                         <Card className="p-6">
@@ -1368,12 +1416,12 @@ export function DashboardPage() {
                           </ResponsiveContainer>
                         </Card>
                       </div>
-                    </>
+                    </div>
                   )}
 
                   {/* ── Evolucion ── */}
                   {scans.length > 1 && (
-                    <>
+                    <div id="sec-evolution" style={{ scrollMarginTop: '110px' }}>
                       <SectionHeader title="Evolucion" tooltip="Evolución de las métricas principales del CSS a lo largo de los escaneos." />
 
                       {/* Peso y Lineas */}
@@ -1463,12 +1511,12 @@ export function DashboardPage() {
                           </ResponsiveContainer>
                         </Card>
                       </div>
-                    </>
+                    </div>
                   )}
 
                   {/* Scan history table */}
                   {scans.length > 0 && (
-                    <Card className="p-6">
+                    <Card id="sec-history" className="p-6" style={{ scrollMarginTop: '110px' }}>
                       <SectionHeader title="Historial de escaneos" tooltip="Todos los escaneos realizados para este proyecto, del más reciente al más antiguo. Haz clic en el ojo para ver el detalle." />
                       <div className="overflow-x-auto">
                         <table className="w-full text-sm">
@@ -1546,18 +1594,23 @@ export function DashboardPage() {
                       </div>
                     </Card>
                   )}
-                </div>
-              )}
 
-              {/* ─── CONFRONTAR HG5 TAB ─── */}
-              {activeTab === 'confrontar' && (
-                <ConfrontarTab
-                  hg5Result={hg5Result}
-                  userResult={latestDetail?.analysis_data as AnalysisResult | undefined}
-                  hg5Loading={hg5Loading}
-                  hg5Error={hg5Error}
-                  onRetry={() => { hg5FetchedRef.current = false; loadHg5() }}
-                />
+                  {/* ─── CONFRONTACIÓN CONTRA HG5 (embedded in Resumen) ─── */}
+                  <div id="sec-hg5-audit" className="pt-4 mt-4 border-t-2" style={{ borderColor: 'rgba(11, 31, 22, 0.08)', scrollMarginTop: '110px' }}>
+                    <div className="mb-4">
+                      <h2 className="text-xl font-semibold text-[#1a2e23]">Confrontación contra HG5</h2>
+                      <p className="text-sm text-[#3d5a4a] mt-1">Auditoría completa de cumplimiento con el framework HG5.</p>
+                    </div>
+                    <ConfrontarTab
+                      hg5Result={hg5Result}
+                      userResult={latestDetail?.analysis_data as AnalysisResult | undefined}
+                      hg5Loading={hg5Loading}
+                      hg5Error={hg5Error}
+                      onRetry={() => { hg5FetchedRef.current = false; loadHg5() }}
+                    />
+                  </div>
+                  </div>
+                </div>
               )}
 
               {/* ─── PLAN DE ACCIÓN TAB ─── */}

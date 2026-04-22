@@ -10,13 +10,4 @@ export default defineConfig({
       "@": path.resolve(__dirname, "./src"),
     },
   },
-  server: {
-    proxy: {
-      '/api/hg5': {
-        target: 'https://hg5.netlify.app',
-        changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/api\/hg5/, ''),
-      },
-    },
-  },
 })
