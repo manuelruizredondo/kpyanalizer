@@ -1,10 +1,11 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { getScanDetail } from '@/lib/scan-storage'
 import type { ScanDetail } from '@/lib/scan-storage'
+import type { AnalysisResult } from '@/types/analysis'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { X } from 'lucide-react'
+import { X, Copy, Download, ChevronDown, ChevronRight, Check } from 'lucide-react'
 
 interface ScanDetailModalProps {
   scanId: string
@@ -15,6 +16,8 @@ export function ScanDetailModal({ scanId, onClose }: ScanDetailModalProps) {
   const [scan, setScan] = useState<ScanDetail | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [cssOpen, setCssOpen] = useState(false)
+  const [copied, setCopied] = useState(false)
 
   useEffect(() => {
     const loadScanDetail = async () => {
@@ -33,6 +36,38 @@ export function ScanDetailModal({ scanId, onClose }: ScanDetailModalProps) {
 
     loadScanDetail()
   }, [scanId])
+
+  // The full CSS is stored in analysis_data.raw — pull it out for view/copy/download
+  const rawCss = useMemo<string>(() => {
+    const ad = scan?.analysis_data as AnalysisResult | undefined
+    return typeof ad?.raw === 'string' ? ad.raw : ''
+  }, [scan])
+
+  const cssSizeKb = useMemo(() => (rawCss ? (new Blob([rawCss]).size / 1024).toFixed(1) : '0'), [rawCss])
+
+  function downloadCss() {
+    if (!rawCss || !scan) return
+    const safeLabel = scan.label.replace(/[^a-z0-9-_]+/gi, '_')
+    const dateStamp = new Date(scan.created_at).toISOString().slice(0, 10)
+    const blob = new Blob([rawCss], { type: 'text/css' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `${safeLabel}_${dateStamp}.css`
+    link.click()
+    URL.revokeObjectURL(url)
+  }
+
+  async function copyCss() {
+    if (!rawCss) return
+    try {
+      await navigator.clipboard.writeText(rawCss)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch (err) {
+      console.error('Error copying CSS:', err)
+    }
+  }
 
   const getScoreBadge = (score: number) => {
     if (score >= 70) return 'bg-[#e0f5ec] text-[#006c48]'
@@ -64,8 +99,8 @@ export function ScanDetailModal({ scanId, onClose }: ScanDetailModalProps) {
   }
 
   return (
-    <div className="fixed inset-0 bg-[#012d1d]/40 backdrop-blur-sm flex items-center justify-center z-50">
-      <Card className="w-full max-w-2xl max-h-[90vh] overflow-y-auto p-8 rounded-2xl">
+    <div className="fixed inset-0 bg-[#012d1d]/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+      <Card className="w-full max-w-4xl max-h-[90vh] overflow-y-auto p-8 rounded-2xl">
         <div className="flex items-center justify-between mb-6">
           <div>
             <h2 className="text-2xl font-bold text-[#1a2e23]">{scan.label}</h2>
@@ -145,6 +180,62 @@ export function ScanDetailModal({ scanId, onClose }: ScanDetailModalProps) {
                 <p className="text-lg font-semibold text-[#006c48]">{scan.class_count}</p>
               </div>
             </div>
+          </div>
+
+          {/* ── CSS analizado: ver / copiar / descargar ── */}
+          <div>
+            <h3 className="text-lg font-semibold text-[#1a2e23] mb-3">CSS analizado</h3>
+            {rawCss ? (
+              <div className="border border-[#f0f2f1] rounded-xl overflow-hidden">
+                <div className="flex items-center justify-between px-4 py-3 bg-[#f9faf9] border-b border-[#f0f2f1]">
+                  <button
+                    onClick={() => setCssOpen(o => !o)}
+                    className="flex items-center gap-2 text-sm font-medium text-[#1a2e23] hover:text-[#006c48]"
+                  >
+                    {cssOpen ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                    {cssOpen ? 'Ocultar' : 'Ver'} CSS completo
+                    <span className="text-[11px] text-[#3d5a4a] font-normal">
+                      ({cssSizeKb} KB · {scan.line_count.toLocaleString()} líneas)
+                    </span>
+                  </button>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      onClick={copyCss}
+                      variant="outline"
+                      size="sm"
+                      className="h-8 gap-1.5 text-xs"
+                      title="Copiar al portapapeles"
+                    >
+                      {copied ? <Check size={13} className="text-[#006c48]" /> : <Copy size={13} />}
+                      {copied ? 'Copiado' : 'Copiar'}
+                    </Button>
+                    <Button
+                      onClick={downloadCss}
+                      variant="outline"
+                      size="sm"
+                      className="h-8 gap-1.5 text-xs"
+                      title="Descargar como .css"
+                    >
+                      <Download size={13} />
+                      Descargar .css
+                    </Button>
+                  </div>
+                </div>
+                {cssOpen && (
+                  <pre className="text-[11px] leading-[1.5] font-mono text-[#1a2e23] bg-white p-4 overflow-auto max-h-[400px] whitespace-pre">
+                    {rawCss}
+                  </pre>
+                )}
+              </div>
+            ) : (
+              <div className="bg-[#fef6e0] border border-[#a67c00]/20 rounded-xl p-4">
+                <p className="text-sm text-[#a67c00]">
+                  Este escaneo se guardó antes de añadir el almacenamiento del CSS completo,
+                  o el campo <code className="font-mono">analysis_data.raw</code> no está disponible.
+                  Los nuevos escaneos sí guardan el CSS íntegro.
+                </p>
+              </div>
+            )}
           </div>
         </div>
 

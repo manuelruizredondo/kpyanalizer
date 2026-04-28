@@ -11,7 +11,7 @@ import { InfoTooltip } from '@/components/ui/InfoTooltip'
 import { ScoreRing } from '@/components/ui/ScoreRing'
 import { classifyFamily } from '@/lib/font-utils'
 import type { Project, Scan, ScanDetail, ActionItem, ActionPriority } from '@/lib/scan-storage'
-import { getActionItems, createActionItem, updateActionItem, deleteActionItem, reorderActionItems, deleteScan } from '@/lib/scan-storage'
+import { getActionItems, createActionItem, updateActionItem, deleteActionItem, reorderActionItems, deleteScan, getScanDetail } from '@/lib/scan-storage'
 import { analyzeCss } from '@/lib/analyzer'
 import {
   LineChart,
@@ -57,6 +57,7 @@ import {
   Eye,
   Zap,
   Grid3X3,
+  Download,
 } from 'lucide-react'
 
 
@@ -1612,6 +1613,39 @@ export function DashboardPage() {
                                         title="Ver detalle"
                                       >
                                         <Eye size={15} className="text-[#006c48]" />
+                                      </button>
+                                      <button
+                                        onClick={async () => {
+                                          try {
+                                            const cached = allScanDetails.get(scan.id)
+                                            const ad = cached?.analysis_data as AnalysisResult | undefined
+                                            let raw = typeof ad?.raw === 'string' ? ad.raw : ''
+                                            if (!raw) {
+                                              const detail = await getScanDetail(scan.id)
+                                              raw = (detail.analysis_data as AnalysisResult)?.raw || ''
+                                            }
+                                            if (!raw) {
+                                              alert('Este escaneo no tiene el CSS guardado.')
+                                              return
+                                            }
+                                            const safeLabel = scan.label.replace(/[^a-z0-9-_]+/gi, '_')
+                                            const dateStamp = new Date(scan.created_at).toISOString().slice(0, 10)
+                                            const blob = new Blob([raw], { type: 'text/css' })
+                                            const url = URL.createObjectURL(blob)
+                                            const link = document.createElement('a')
+                                            link.href = url
+                                            link.download = `${safeLabel}_${dateStamp}.css`
+                                            link.click()
+                                            URL.revokeObjectURL(url)
+                                          } catch (err) {
+                                            console.error('Error downloading CSS:', err)
+                                            alert('No se pudo descargar el CSS.')
+                                          }
+                                        }}
+                                        className="p-1.5 rounded-lg hover:bg-[#e5f2ec] transition-colors"
+                                        title="Descargar CSS original"
+                                      >
+                                        <Download size={15} className="text-[#006c48]" />
                                       </button>
                                       <button
                                         onClick={async () => {

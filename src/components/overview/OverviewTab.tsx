@@ -134,7 +134,10 @@ export function OverviewTab({ result }: OverviewTabProps) {
     { label: "Prefijos vendor", value: result.vendorPrefixCount, icon: AlertTriangle, severity: sev(result.vendorPrefixCount, 30, 10, true), tooltip: "-webkit-, -moz-... Usa autoprefixer para automatizarlos.", sortOrder: 0 },
     { label: "Selector universal", value: result.universalSelectorCount, icon: Zap, severity: sev(result.universalSelectorCount, 15, 5, true), tooltip: "Uso de * — puede afectar rendimiento si se abusa.", sortOrder: 0 },
     { label: "Max especificidad", value: `${result.maxSpecificity[0]},${result.maxSpecificity[1]},${result.maxSpecificity[2]}`, icon: Zap, severity: result.maxSpecificity[0] > 0 ? "bad" : result.maxSpecificity[1] > 5 ? "warn" : "neutral", tooltip: "Especificidad mas alta encontrada (a,b,c). Si a > 0, hay IDs.", sortOrder: 0 },
-    { label: "Angular (:host/::ng-deep)", value: result.angularEncapsulationCount, icon: AlertTriangle, severity: sev(result.angularEncapsulationCount, 5, 1, true), tooltip: ":host, :host-context, ::ng-deep, /deep/ y >>>. Selectores de Angular ViewEncapsulation que no deberian estar en un CSS global.", sortOrder: 0 },
+    { label: ":host", value: result.angularEncapsulationBreakdown.host, icon: AlertTriangle, severity: sev(result.angularEncapsulationBreakdown.host, 5, 1, true), tooltip: "Selector Angular :host. No deberia estar en un CSS global.", sortOrder: 0 },
+    { label: ":host-context", value: result.angularEncapsulationBreakdown.hostContext, icon: AlertTriangle, severity: sev(result.angularEncapsulationBreakdown.hostContext, 5, 1, true), tooltip: "Selector Angular :host-context. No deberia estar en un CSS global.", sortOrder: 0 },
+    { label: "::ng-deep", value: result.angularEncapsulationBreakdown.ngDeep, icon: AlertTriangle, severity: sev(result.angularEncapsulationBreakdown.ngDeep, 5, 1, true), tooltip: "Pseudo-elemento Angular ::ng-deep para piercing del shadow DOM. Deprecado.", sortOrder: 0 },
+    { label: "/deep/, >>>", value: result.angularEncapsulationBreakdown.deepCombinator, icon: AlertTriangle, severity: sev(result.angularEncapsulationBreakdown.deepCombinator, 5, 1, true), tooltip: "Combinadores legacy /deep/ y >>>. No estandar y deprecados.", sortOrder: 0 },
 
     // Structure (neutral)
     { label: "Peso", value: `${(result.fileSize / 1024).toFixed(1)} KB`, icon: FileText, severity: "neutral", tooltip: "Tamano del archivo CSS.", sortOrder: 0 },
@@ -360,6 +363,66 @@ export function OverviewTab({ result }: OverviewTabProps) {
           />
         ))}
       </div>
+
+      {/* ══════════════════════════════════════════════════════════════
+           ANGULAR ENCAPSULATION — breakdown + occurrences
+         ══════════════════════════════════════════════════════════════ */}
+      {result.angularEncapsulationCount > 0 && (
+        <Card className="p-5">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <AlertTriangle size={16} className="text-[#9e2b25]" />
+              <h4 className="text-sm font-semibold text-[#1a2e23]">Selectores Angular ViewEncapsulation</h4>
+              <InfoTooltip text=":host, :host-context, ::ng-deep, /deep/ y >>>. Son selectores especificos de componentes Angular (ViewEncapsulation) y no deberian aparecer en un CSS global. Objetivo: 0." />
+            </div>
+            <Badge className="bg-[#fef2f1] text-[#9e2b25]">{result.angularEncapsulationCount} total</Badge>
+          </div>
+
+          {/* Breakdown chips */}
+          <div className="flex flex-wrap gap-2 mb-4">
+            <Badge variant="outline" className="text-xs">
+              :host <span className="ml-1 font-bold text-[#9e2b25]">{result.angularEncapsulationBreakdown.host}</span>
+            </Badge>
+            <Badge variant="outline" className="text-xs">
+              :host-context <span className="ml-1 font-bold text-[#9e2b25]">{result.angularEncapsulationBreakdown.hostContext}</span>
+            </Badge>
+            <Badge variant="outline" className="text-xs">
+              ::ng-deep <span className="ml-1 font-bold text-[#9e2b25]">{result.angularEncapsulationBreakdown.ngDeep}</span>
+            </Badge>
+            <Badge variant="outline" className="text-xs">
+              /deep/, &gt;&gt;&gt; <span className="ml-1 font-bold text-[#9e2b25]">{result.angularEncapsulationBreakdown.deepCombinator}</span>
+            </Badge>
+          </div>
+
+          {/* Occurrences table */}
+          <div className="border border-[#f0f2f1] rounded-lg overflow-hidden">
+            <div className="grid grid-cols-[80px_120px_1fr] text-[10px] uppercase tracking-wider text-[#3d5a4a] bg-[#f9faf9] px-3 py-2 font-semibold">
+              <span>Linea</span>
+              <span>Tipo</span>
+              <span>Selector</span>
+            </div>
+            <div className="max-h-[280px] overflow-y-auto divide-y divide-[#f0f2f1]">
+              {result.angularEncapsulationLocations.slice(0, 200).map((loc, i) => (
+                <div key={i} className="grid grid-cols-[80px_120px_1fr] px-3 py-1.5 text-xs hover:bg-[#fef2f1]/40">
+                  <span className="font-mono text-[#3d5a4a]">L{loc.line}:{loc.column}</span>
+                  <span className="font-mono text-[#9e2b25]">
+                    {loc.kind === 'host' && ':host'}
+                    {loc.kind === 'host-context' && ':host-context'}
+                    {loc.kind === 'ng-deep' && '::ng-deep'}
+                    {loc.kind === 'deep-combinator' && '/deep/, >>>'}
+                  </span>
+                  <span className="font-mono text-[#1a2e23] truncate">{loc.selector}</span>
+                </div>
+              ))}
+            </div>
+            {result.angularEncapsulationLocations.length > 200 && (
+              <div className="px-3 py-2 text-[10px] text-[#3d5a4a] bg-[#f9faf9] border-t border-[#f0f2f1]">
+                Mostrando 200 de {result.angularEncapsulationLocations.length} ocurrencias.
+              </div>
+            )}
+          </div>
+        </Card>
+      )}
 
       {/* ══════════════════════════════════════════════════════════════
            CHARTS ROW 1 — Specificity + Hardcoded Breakdown
