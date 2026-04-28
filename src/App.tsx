@@ -1,12 +1,14 @@
-import { useCallback, useState, useEffect } from 'react'
+import { useCallback, useState, useEffect, useMemo } from 'react'
 import { Routes, Route, Navigate } from 'react-router-dom'
 import { useAuth } from '@/contexts/AuthContext'
 import { LoginPage } from '@/components/auth/LoginPage'
 import { AppLayout } from '@/components/layout/AppLayout'
 import { DashboardPage } from '@/components/dashboard/DashboardPage'
 import { ActionPlanPage } from '@/components/actionplan/ActionPlanPage'
-import { saveScan, getProjects, getProjectScans } from '@/lib/scan-storage'
+import { saveScan, getProjects, getProjectScans, getScanDetail } from '@/lib/scan-storage'
 import type { Project } from '@/lib/scan-storage'
+import type { AnalysisResult } from '@/types/analysis'
+import type { AngularHistoryPoint } from '@/components/overview/OverviewTab'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -45,30 +47,84 @@ function AnalyzePage() {
     state: 'idle' | 'loading' | 'success' | 'error'
     message: string
   }>({ state: 'idle', message: '' })
+  const [angularHistory, setAngularHistory] = useState<AngularHistoryPoint[] | undefined>(undefined)
 
+  // Load projects on mount so the trend chart can show history without opening the save form
   useEffect(() => {
-    if (showSaveForm) {
-      getProjects().then(setProjects).catch(console.error)
-    }
-  }, [showSaveForm])
+    getProjects()
+      .then((list) => {
+        setProjects(list)
+        // Default-select the most recent project so the Angular trend chart populates immediately
+        setSelectedProjectId((prev) => prev || (list[0]?.id ?? ''))
+      })
+      .catch(console.error)
+  }, [])
 
-  // Auto-generate label when project is selected
+  // Auto-generate label when project is selected + load Angular history for trend chart
   useEffect(() => {
     if (!selectedProjectId) {
       setAutoLabel('')
+      setAngularHistory(undefined)
       return
     }
+    let cancelled = false
     getProjectScans(selectedProjectId)
-      .then((scans) => {
+      .then(async (scans) => {
+        if (cancelled) return
         const nextNum = scans.length + 1
         const dateStr = new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' })
         setAutoLabel(`Escaneo #${nextNum} — ${dateStr}`)
+
+        // Build chronological angular history from saved scans
+        const ordered = [...scans].sort(
+          (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
+        )
+        const details = await Promise.all(
+          ordered.map((s) => getScanDetail(s.id).catch(() => null)),
+        )
+        if (cancelled) return
+        const history: AngularHistoryPoint[] = ordered.map((s, i) => {
+          const ad = details[i]?.analysis_data as AnalysisResult | undefined
+          const fromColumn = (s as { angular_encapsulation_count?: number }).angular_encapsulation_count
+          const total = typeof fromColumn === 'number' ? fromColumn : (ad?.angularEncapsulationCount ?? 0)
+          const bd = ad?.angularEncapsulationBreakdown
+          return {
+            date: new Date(s.created_at).toLocaleDateString('es-ES', { day: '2-digit', month: 'short' }),
+            total,
+            host: bd?.host ?? 0,
+            hostContext: bd?.hostContext ?? 0,
+            ngDeep: bd?.ngDeep ?? 0,
+            deepCombinator: bd?.deepCombinator ?? 0,
+          }
+        })
+        setAngularHistory(history)
       })
       .catch(() => {
+        if (cancelled) return
         const dateStr = new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' })
         setAutoLabel(`Escaneo — ${dateStr}`)
+        setAngularHistory(undefined)
       })
+    return () => {
+      cancelled = true
+    }
   }, [selectedProjectId])
+
+  // Append the current (unsaved) scan as the latest projected point
+  const angularHistoryWithCurrent: AngularHistoryPoint[] | undefined = useMemo(() => {
+    if (!angularHistory || !result) return angularHistory
+    const today = new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short' })
+    const current: AngularHistoryPoint = {
+      date: `${today} (actual)`,
+      total: result.angularEncapsulationCount,
+      host: result.angularEncapsulationBreakdown.host,
+      hostContext: result.angularEncapsulationBreakdown.hostContext,
+      ngDeep: result.angularEncapsulationBreakdown.ngDeep,
+      deepCombinator: result.angularEncapsulationBreakdown.deepCombinator,
+      isCurrent: true,
+    }
+    return [...angularHistory, current]
+  }, [angularHistory, result])
 
   const handleCssChange = useCallback(
     (newCss: string) => {
@@ -291,7 +347,7 @@ function AnalyzePage() {
 
           <div className="mt-6">
             <TabsContent value="overview">
-              <OverviewTab result={result} />
+              <OverviewTab result={result} angularHistory={angularHistoryWithCurrent} />
             </TabsContent>
             <TabsContent value="hardcoded">
               <HardcodedTab result={result} dsCoverage={ds.coverage} dsTokens={ds.tokens} />

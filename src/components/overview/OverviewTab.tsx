@@ -6,7 +6,7 @@ import {
 } from "lucide-react"
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  PieChart, Pie, Cell, Legend,
+  PieChart, Pie, Cell, Legend, LineChart, Line, ReferenceLine,
 } from "recharts"
 import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -95,11 +95,22 @@ function ScoreRing({ score }: { score: number }) {
 }
 
 // ─── Main Component ──────────────────────────────────────────────
-interface OverviewTabProps {
-  result: AnalysisResult
+export interface AngularHistoryPoint {
+  date: string
+  total: number
+  host: number
+  hostContext: number
+  ngDeep: number
+  deepCombinator: number
+  isCurrent?: boolean
 }
 
-export function OverviewTab({ result }: OverviewTabProps) {
+interface OverviewTabProps {
+  result: AnalysisResult
+  angularHistory?: AngularHistoryPoint[]
+}
+
+export function OverviewTab({ result, angularHistory }: OverviewTabProps) {
   const sc = scoreColor(result.healthScore)
   const cx = complexityConfig(result.complexityRating)
   const shorthandRatio = result.shorthandCount + result.longhandCount > 0
@@ -393,6 +404,53 @@ export function OverviewTab({ result }: OverviewTabProps) {
               /deep/, &gt;&gt;&gt; <span className="ml-1 font-bold text-[#9e2b25]">{result.angularEncapsulationBreakdown.deepCombinator}</span>
             </Badge>
           </div>
+
+          {/* Reduction trend chart */}
+          {angularHistory && angularHistory.length > 0 ? (
+            <div className="mb-4 p-3 rounded-lg border border-[#f0f2f1] bg-[#fafbfa]">
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-1.5">
+                  <p className="text-[11px] font-semibold uppercase tracking-wider text-[#3d5a4a]">
+                    Reducción a lo largo del tiempo
+                  </p>
+                  <InfoTooltip text="Evolución del total de selectores Angular ViewEncapsulation a través de los escaneos del proyecto. La línea verde marca el objetivo: 0." />
+                </div>
+                {angularHistory.length >= 2 && (() => {
+                  const first = angularHistory[0].total
+                  const last = angularHistory[angularHistory.length - 1].total
+                  const diff = last - first
+                  const pct = first > 0 ? Math.round(((first - last) / first) * 100) : 0
+                  if (diff < 0) return <Badge className="bg-[#e0f5ec] text-[#006c48] text-[10px]">▼ {pct}% reducido</Badge>
+                  if (diff > 0) return <Badge className="bg-[#fef2f1] text-[#9e2b25] text-[10px]">▲ {-pct}% incrementado</Badge>
+                  return <Badge className="bg-[#f0f2f1] text-[#3d5a4a] text-[10px]">= sin cambio</Badge>
+                })()}
+              </div>
+              <ResponsiveContainer width="100%" height={220}>
+                <LineChart data={angularHistory} margin={{ top: 8, right: 16, bottom: 0, left: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f0f2f1" />
+                  <XAxis dataKey="date" tick={{ fontSize: 10, fill: C.muted }} tickLine={false} axisLine={false} />
+                  <YAxis tick={{ fontSize: 10, fill: C.muted }} tickLine={false} axisLine={false} allowDecimals={false} />
+                  <Tooltip contentStyle={TT_STYLE} />
+                  <Legend wrapperStyle={{ fontSize: 10 }} iconSize={8} />
+                  <ReferenceLine y={0} stroke="#006c48" strokeDasharray="6 3" strokeOpacity={0.4} label={{ value: 'Objetivo: 0', position: 'right', fontSize: 9, fill: '#006c48' }} />
+                  <Line type="monotone" dataKey="total" stroke="#9e2b25" strokeWidth={2.5} dot={{ r: 3.5, fill: '#9e2b25' }} activeDot={{ r: 5 }} name="Total" />
+                  <Line type="monotone" dataKey="host" stroke="#a67c00" strokeWidth={1.5} dot={{ r: 2 }} name=":host" />
+                  <Line type="monotone" dataKey="hostContext" stroke="#d4a017" strokeWidth={1.5} dot={{ r: 2 }} name=":host-context" />
+                  <Line type="monotone" dataKey="ngDeep" stroke="#c0392b" strokeWidth={1.5} dot={{ r: 2 }} name="::ng-deep" />
+                  <Line type="monotone" dataKey="deepCombinator" stroke="#7d2e25" strokeWidth={1.5} dot={{ r: 2 }} name="/deep/, >>>" />
+                </LineChart>
+              </ResponsiveContainer>
+              <p className="text-[10px] text-[#3d5a4a] mt-1 text-right">
+                {angularHistory.length} {angularHistory.length === 1 ? 'punto' : 'puntos'} · objetivo: 0
+              </p>
+            </div>
+          ) : (
+            <div className="mb-4 p-3 rounded-lg border border-dashed border-[#f0f2f1] bg-[#fafbfa] text-center">
+              <p className="text-[11px] text-[#3d5a4a]">
+                Selecciona un proyecto al guardar para ver la evolución de este KPI a lo largo de los escaneos.
+              </p>
+            </div>
+          )}
 
           {/* Occurrences table */}
           <div className="border border-[#f0f2f1] rounded-lg overflow-hidden">
