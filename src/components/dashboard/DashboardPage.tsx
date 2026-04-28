@@ -536,6 +536,23 @@ export function DashboardPage() {
     }
   }), [chronologicalScans, allScanDetails])
 
+  // ── Angular ViewEncapsulation evolution (:host, :host-context, ::ng-deep, /deep/, >>>) ──
+  const angularEncapsulationChartData = useMemo(() => chronologicalScans.map((s) => {
+    const detail = allScanDetails.get(s.id)
+    const ad = detail?.analysis_data as AnalysisResult | undefined
+    // Prefer the column on the scan row (cheap), fall back to the JSONB detail
+    const fromColumn = (s as { angular_encapsulation_count?: number }).angular_encapsulation_count
+    const fromDetail = ad?.angularEncapsulationCount
+    return {
+      date: new Date(s.created_at).toLocaleDateString('es-ES', { day: '2-digit', month: 'short' }),
+      angular: typeof fromColumn === 'number' ? fromColumn : (fromDetail ?? 0),
+      host: ad?.angularEncapsulationBreakdown?.host ?? 0,
+      hostContext: ad?.angularEncapsulationBreakdown?.hostContext ?? 0,
+      ngDeep: ad?.angularEncapsulationBreakdown?.ngDeep ?? 0,
+      deepCombinator: ad?.angularEncapsulationBreakdown?.deepCombinator ?? 0,
+    }
+  }), [chronologicalScans, allScanDetails])
+
   // ── HG5 Compliance evolution data ──
   const hg5EvolutionData = useMemo(() => {
     if (!hg5Result) return null
@@ -1225,7 +1242,7 @@ export function DashboardPage() {
 
                   {/* ── Cumplimiento HG5 (Evolution) ── */}
                   {hg5Result && hg5EvolutionData && scans.length > 0 && (
-                    <div id="sec-hg5-evolution" style={{ scrollMarginTop: '110px' }}>
+                    <div id="sec-hg5-evolution" style={{ scrollMarginTop: '110px' }} className="space-y-6">
                       <SectionHeader title="Cumplimiento HG5" tooltip="Evolución de la adherencia de tu CSS al framework HG5 a lo largo de los escaneos. Las líneas punteadas representan los valores de referencia de HG5." />
 
                       {/* Compliance score over time */}
@@ -1369,8 +1386,8 @@ export function DashboardPage() {
 
                   {/* ── Reduccion de Legacy ── */}
                   {scans.length > 1 && (
-                    <div id="sec-legacy" style={{ scrollMarginTop: '110px' }}>
-                      <SectionHeader title="Reduccion de Legacy" tooltip="Seguimiento de valores legacy (hardcodeados, fuentes no autorizadas) a lo largo de los escaneos. El objetivo es llevarlos a cero." />
+                    <div id="sec-legacy" style={{ scrollMarginTop: '110px' }} className="space-y-6">
+                      <SectionHeader title="Reduccion de Legacy" tooltip="Seguimiento de valores legacy (hardcodeados, fuentes no autorizadas, selectores Angular fuera de contexto) a lo largo de los escaneos. El objetivo es llevarlos a cero." />
                       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                         <Card className="p-6">
                           <ChartTitle
@@ -1410,6 +1427,33 @@ export function DashboardPage() {
                               <YAxis tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
                               <Tooltip contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.08)' }} />
                               <Line type="monotone" dataKey="fuentes" stroke="#a67c00" strokeWidth={2} dot={{ r: 3, fill: '#a67c00' }} name="Fuentes" />
+                            </LineChart>
+                          </ResponsiveContainer>
+                        </Card>
+                      </div>
+
+                      {/* Selectores Angular ViewEncapsulation (full width) */}
+                      <div className="grid grid-cols-1 gap-6">
+                        <Card className="p-6">
+                          <ChartTitle
+                            title="Selectores Angular (:host / ::ng-deep)"
+                            tooltip=":host, :host-context, ::ng-deep, /deep/ y >>>. Selectores de Angular ViewEncapsulation que no deberian estar en un CSS global. Objetivo: 0."
+                            first={angularEncapsulationChartData[0]?.angular}
+                            last={angularEncapsulationChartData[angularEncapsulationChartData.length - 1]?.angular}
+                          />
+                          <ResponsiveContainer width="100%" height={240}>
+                            <LineChart data={angularEncapsulationChartData}>
+                              <CartesianGrid strokeDasharray="3 3" stroke="#f0f2f1" />
+                              <XAxis dataKey="date" tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
+                              <YAxis tick={{ fontSize: 11 }} tickLine={false} axisLine={false} allowDecimals={false} />
+                              <Tooltip contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.08)' }} />
+                              <Legend wrapperStyle={{ fontSize: 11 }} />
+                              <ReferenceLine y={0} stroke="#006c48" strokeDasharray="6 3" strokeOpacity={0.4} label={{ value: 'Objetivo: 0', position: 'right', fontSize: 10, fill: '#006c48' }} />
+                              <Line type="monotone" dataKey="angular" stroke="#9e2b25" strokeWidth={2.5} dot={{ r: 4, fill: '#9e2b25' }} name="Total" />
+                              <Line type="monotone" dataKey="host" stroke="#a67c00" strokeWidth={1.5} dot={{ r: 2, fill: '#a67c00' }} name=":host" />
+                              <Line type="monotone" dataKey="hostContext" stroke="#d4a017" strokeWidth={1.5} dot={{ r: 2, fill: '#d4a017' }} name=":host-context" />
+                              <Line type="monotone" dataKey="ngDeep" stroke="#c0392b" strokeWidth={1.5} dot={{ r: 2, fill: '#c0392b' }} name="::ng-deep" />
+                              <Line type="monotone" dataKey="deepCombinator" stroke="#7d2e25" strokeWidth={1.5} dot={{ r: 2, fill: '#7d2e25' }} name="/deep/, >>>" />
                             </LineChart>
                           </ResponsiveContainer>
                         </Card>
