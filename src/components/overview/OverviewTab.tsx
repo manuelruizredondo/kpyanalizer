@@ -11,6 +11,7 @@ import {
 import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { InfoTooltip } from "@/components/ui/InfoTooltip"
+import { KpiTrendCard } from "@/components/charts/KpiTrendCard"
 import { C, CHART_COLORS, TT_STYLE } from "@/lib/colors"
 import type { LucideIcon } from "lucide-react"
 
@@ -105,12 +106,29 @@ export interface AngularHistoryPoint {
   isCurrent?: boolean
 }
 
+export interface KpiHistoryPoint {
+  date: string
+  isCurrent?: boolean
+  ids: number
+  vendor: number
+  universal: number
+  pseudoElements: number
+  pseudoClasses: number
+  host: number
+  ngDeep: number
+  mediaQueries: number
+  keyframes: number
+  important: number
+  duplicateSelectors: number
+}
+
 interface OverviewTabProps {
   result: AnalysisResult
   angularHistory?: AngularHistoryPoint[]
+  kpiHistory?: KpiHistoryPoint[]
 }
 
-export function OverviewTab({ result, angularHistory }: OverviewTabProps) {
+export function OverviewTab({ result, angularHistory, kpiHistory }: OverviewTabProps) {
   const sc = scoreColor(result.healthScore)
   const cx = complexityConfig(result.complexityRating)
   const shorthandRatio = result.shorthandCount + result.longhandCount > 0
@@ -480,6 +498,74 @@ export function OverviewTab({ result, angularHistory }: OverviewTabProps) {
             )}
           </div>
         </Card>
+      )}
+
+      {/* ══════════════════════════════════════════════════════════════
+           EVOLUCION DE KPIs — line charts por metrica a reducir
+         ══════════════════════════════════════════════════════════════ */}
+      {kpiHistory && kpiHistory.length > 0 && (
+        <div className="space-y-3">
+          <div className="flex items-center gap-2">
+            <h3 className="text-sm font-semibold text-[#1a2e23]">Evolución por KPI</h3>
+            <InfoTooltip text="Línea de evolución a través de los escaneos del proyecto. La línea verde marca el objetivo (0 en casi todos)." />
+            <span className="text-[10px] text-[#3d5a4a]">
+              {kpiHistory.length} {kpiHistory.length === 1 ? 'punto' : 'puntos'}
+            </span>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+            <KpiTrendCard
+              title="IDs como selector"
+              tooltip="#id en selectores. Aumentan especificidad y dificultan mantenimiento."
+              color="#9e2b25"
+              data={kpiHistory.map(p => ({ date: p.date, value: p.ids }))}
+            />
+            <KpiTrendCard
+              title="Prefijos vendor"
+              tooltip="-webkit-, -moz-, -ms-, -o-. Usa autoprefixer."
+              color="#a67c00"
+              data={kpiHistory.map(p => ({ date: p.date, value: p.vendor }))}
+            />
+            <KpiTrendCard
+              title="Selector universal"
+              tooltip="* — afecta rendimiento si se abusa."
+              color="#a67c00"
+              data={kpiHistory.map(p => ({ date: p.date, value: p.universal }))}
+            />
+            <KpiTrendCard
+              title=":host"
+              tooltip="Selector Angular :host fuera de contexto."
+              color="#9e2b25"
+              data={kpiHistory.map(p => ({ date: p.date, value: p.host }))}
+            />
+            <KpiTrendCard
+              title="::ng-deep"
+              tooltip="Pseudo-elemento Angular ::ng-deep. Deprecado."
+              color="#9e2b25"
+              data={kpiHistory.map(p => ({ date: p.date, value: p.ngDeep }))}
+            />
+            <KpiTrendCard
+              title="Pseudo-elementos"
+              tooltip="::before, ::after, ::placeholder, etc. (excluye ::ng-deep que se mide aparte)."
+              color="#3d5a4a"
+              goal={undefined}
+              data={kpiHistory.map(p => ({ date: p.date, value: p.pseudoElements }))}
+            />
+            <KpiTrendCard
+              title="Media queries"
+              tooltip="Breakpoints responsive. Demasiados distintos puede indicar falta de sistema."
+              color="#3d5a4a"
+              goal={undefined}
+              data={kpiHistory.map(p => ({ date: p.date, value: p.mediaQueries }))}
+            />
+            <KpiTrendCard
+              title="Keyframes"
+              tooltip="Animaciones @keyframes definidas."
+              color="#3d5a4a"
+              goal={undefined}
+              data={kpiHistory.map(p => ({ date: p.date, value: p.keyframes }))}
+            />
+          </div>
+        </div>
       )}
 
       {/* ══════════════════════════════════════════════════════════════

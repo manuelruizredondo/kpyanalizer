@@ -9,6 +9,7 @@ import { ScanDetailModal } from './ScanDetailModal'
 import { ConfrontarTab } from './ConfrontarTab'
 import { InfoTooltip } from '@/components/ui/InfoTooltip'
 import { ScoreRing } from '@/components/ui/ScoreRing'
+import { KpiTrendCard } from '@/components/charts/KpiTrendCard'
 import { classifyFamily } from '@/lib/font-utils'
 import type { Project, Scan, ScanDetail, ActionItem, ActionPriority } from '@/lib/scan-storage'
 import { getActionItems, createActionItem, updateActionItem, deleteActionItem, reorderActionItems, deleteScan, getScanDetail } from '@/lib/scan-storage'
@@ -43,6 +44,7 @@ import {
   Copy,
   Recycle,
   ShieldCheck,
+  BarChart3,
   Palette,
   Type,
   Loader2,
@@ -537,6 +539,24 @@ export function DashboardPage() {
     }
   }), [chronologicalScans, allScanDetails])
 
+  // ── KPI evolution: line trends per metric to drive down ──
+  const kpiTrendData = useMemo(() => chronologicalScans.map((s) => {
+    const detail = allScanDetails.get(s.id)
+    const ad = detail?.analysis_data as AnalysisResult | undefined
+    return {
+      date: new Date(s.created_at).toLocaleDateString('es-ES', { day: '2-digit', month: 'short' }),
+      ids: ad?.idCount ?? s.id_count ?? 0,
+      vendor: ad?.vendorPrefixCount ?? 0,
+      universal: ad?.universalSelectorCount ?? 0,
+      pseudoElements: ad?.pseudoElementCount ?? 0,
+      pseudoClasses: ad?.pseudoClassCount ?? 0,
+      host: ad?.angularEncapsulationBreakdown?.host ?? 0,
+      ngDeep: ad?.angularEncapsulationBreakdown?.ngDeep ?? 0,
+      mediaQueries: ad?.mediaQueries?.length ?? 0,
+      keyframes: ad?.keyframes?.length ?? 0,
+    }
+  }), [chronologicalScans, allScanDetails])
+
   // ── Angular ViewEncapsulation evolution (:host, :host-context, ::ng-deep, /deep/, >>>) ──
   const angularEncapsulationChartData = useMemo(() => chronologicalScans.map((s) => {
     const detail = allScanDetails.get(s.id)
@@ -736,6 +756,7 @@ export function DashboardPage() {
                         { id: 'sec-hardcoded',     label: 'Hardcodeados',      icon: Palette },
                         { id: 'sec-weights',       label: 'Font-Weights',      icon: Ruler },
                         { id: 'sec-hg5-evolution', label: 'Cumplimiento HG5',  icon: ShieldCheck },
+                        { id: 'sec-kpi-trends',    label: 'Evolución por KPI', icon: BarChart3 },
                         { id: 'sec-legacy',        label: 'Legacy',            icon: AlertTriangle },
                         { id: 'sec-evolution',     label: 'Evolución',         icon: Eye },
                         { id: 'sec-history',       label: 'Historial',         icon: FileText },
@@ -1381,6 +1402,66 @@ export function DashboardPage() {
                             </LineChart>
                           </ResponsiveContainer>
                         </Card>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* ── Evolución por KPI ── */}
+                  {scans.length > 1 && kpiTrendData.length > 1 && (
+                    <div id="sec-kpi-trends" style={{ scrollMarginTop: '110px' }} className="space-y-3">
+                      <SectionHeader title="Evolución por KPI" tooltip="Línea de evolución a través de los escaneos para los KPIs que conviene reducir. La línea verde marca el objetivo (0 en la mayoría)." />
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                        <KpiTrendCard
+                          title="IDs como selector"
+                          tooltip="#id en selectores. Aumentan especificidad y dificultan el mantenimiento."
+                          color="#9e2b25"
+                          data={kpiTrendData.map(p => ({ date: p.date, value: p.ids }))}
+                        />
+                        <KpiTrendCard
+                          title="Prefijos vendor"
+                          tooltip="-webkit-, -moz-, -ms-, -o-. Usa autoprefixer."
+                          color="#a67c00"
+                          data={kpiTrendData.map(p => ({ date: p.date, value: p.vendor }))}
+                        />
+                        <KpiTrendCard
+                          title="Selector universal"
+                          tooltip="* — afecta rendimiento si se abusa."
+                          color="#a67c00"
+                          data={kpiTrendData.map(p => ({ date: p.date, value: p.universal }))}
+                        />
+                        <KpiTrendCard
+                          title=":host"
+                          tooltip="Selector Angular :host fuera de contexto."
+                          color="#9e2b25"
+                          data={kpiTrendData.map(p => ({ date: p.date, value: p.host }))}
+                        />
+                        <KpiTrendCard
+                          title="::ng-deep"
+                          tooltip="Pseudo-elemento Angular ::ng-deep. Deprecado."
+                          color="#9e2b25"
+                          data={kpiTrendData.map(p => ({ date: p.date, value: p.ngDeep }))}
+                        />
+                        <KpiTrendCard
+                          title="Pseudo-elementos"
+                          tooltip="::before, ::after, ::placeholder, etc. (excluye ::ng-deep)."
+                          color="#3d5a4a"
+                          goal={undefined}
+                          data={kpiTrendData.map(p => ({ date: p.date, value: p.pseudoElements }))}
+                        />
+                        <KpiTrendCard
+                          title="Media queries"
+                          tooltip="Breakpoints responsive. Demasiados distintos puede indicar falta de sistema."
+                          color="#3d5a4a"
+                          goal={undefined}
+                          data={kpiTrendData.map(p => ({ date: p.date, value: p.mediaQueries }))}
+                        />
+                        <KpiTrendCard
+                          title="Keyframes"
+                          tooltip="Animaciones @keyframes definidas."
+                          color="#3d5a4a"
+                          goal={undefined}
+                          data={kpiTrendData.map(p => ({ date: p.date, value: p.keyframes }))}
+                        />
                       </div>
                     </div>
                   )}

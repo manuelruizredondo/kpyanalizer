@@ -8,7 +8,7 @@ import { ActionPlanPage } from '@/components/actionplan/ActionPlanPage'
 import { saveScan, getProjects, getProjectScans, getScanDetail } from '@/lib/scan-storage'
 import type { Project } from '@/lib/scan-storage'
 import type { AnalysisResult } from '@/types/analysis'
-import type { AngularHistoryPoint } from '@/components/overview/OverviewTab'
+import type { AngularHistoryPoint, KpiHistoryPoint } from '@/components/overview/OverviewTab'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -48,6 +48,7 @@ function AnalyzePage() {
     message: string
   }>({ state: 'idle', message: '' })
   const [angularHistory, setAngularHistory] = useState<AngularHistoryPoint[] | undefined>(undefined)
+  const [kpiHistory, setKpiHistory] = useState<KpiHistoryPoint[] | undefined>(undefined)
 
   // Load projects on mount so the trend chart can show history without opening the save form
   useEffect(() => {
@@ -60,11 +61,12 @@ function AnalyzePage() {
       .catch(console.error)
   }, [])
 
-  // Auto-generate label when project is selected + load Angular history for trend chart
+  // Auto-generate label when project is selected + load Angular & KPI history for trend charts
   useEffect(() => {
     if (!selectedProjectId) {
       setAutoLabel('')
       setAngularHistory(undefined)
+      setKpiHistory(undefined)
       return
     }
     let cancelled = false
@@ -75,7 +77,7 @@ function AnalyzePage() {
         const dateStr = new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' })
         setAutoLabel(`Escaneo #${nextNum} — ${dateStr}`)
 
-        // Build chronological angular history from saved scans
+        // Build chronological history from saved scans
         const ordered = [...scans].sort(
           (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
         )
@@ -83,7 +85,8 @@ function AnalyzePage() {
           ordered.map((s) => getScanDetail(s.id).catch(() => null)),
         )
         if (cancelled) return
-        const history: AngularHistoryPoint[] = ordered.map((s, i) => {
+
+        const angHistory: AngularHistoryPoint[] = ordered.map((s, i) => {
           const ad = details[i]?.analysis_data as AnalysisResult | undefined
           const fromColumn = (s as { angular_encapsulation_count?: number }).angular_encapsulation_count
           const total = typeof fromColumn === 'number' ? fromColumn : (ad?.angularEncapsulationCount ?? 0)
@@ -97,13 +100,34 @@ function AnalyzePage() {
             deepCombinator: bd?.deepCombinator ?? 0,
           }
         })
-        setAngularHistory(history)
+        setAngularHistory(angHistory)
+
+        const kHistory: KpiHistoryPoint[] = ordered.map((s, i) => {
+          const ad = details[i]?.analysis_data as AnalysisResult | undefined
+          const date = new Date(s.created_at).toLocaleDateString('es-ES', { day: '2-digit', month: 'short' })
+          return {
+            date,
+            ids: ad?.idCount ?? s.id_count ?? 0,
+            vendor: ad?.vendorPrefixCount ?? 0,
+            universal: ad?.universalSelectorCount ?? 0,
+            pseudoElements: ad?.pseudoElementCount ?? 0,
+            pseudoClasses: ad?.pseudoClassCount ?? 0,
+            host: ad?.angularEncapsulationBreakdown?.host ?? 0,
+            ngDeep: ad?.angularEncapsulationBreakdown?.ngDeep ?? 0,
+            mediaQueries: ad?.mediaQueries?.length ?? 0,
+            keyframes: ad?.keyframes?.length ?? 0,
+            important: ad?.importantCount ?? s.important_count ?? 0,
+            duplicateSelectors: ad?.duplicateSelectors?.length ?? 0,
+          }
+        })
+        setKpiHistory(kHistory)
       })
       .catch(() => {
         if (cancelled) return
         const dateStr = new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' })
         setAutoLabel(`Escaneo — ${dateStr}`)
         setAngularHistory(undefined)
+        setKpiHistory(undefined)
       })
     return () => {
       cancelled = true
@@ -125,6 +149,27 @@ function AnalyzePage() {
     }
     return [...angularHistory, current]
   }, [angularHistory, result])
+
+  const kpiHistoryWithCurrent: KpiHistoryPoint[] | undefined = useMemo(() => {
+    if (!kpiHistory || !result) return kpiHistory
+    const today = new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'short' })
+    const current: KpiHistoryPoint = {
+      date: `${today} (actual)`,
+      ids: result.idCount,
+      vendor: result.vendorPrefixCount,
+      universal: result.universalSelectorCount,
+      pseudoElements: result.pseudoElementCount,
+      pseudoClasses: result.pseudoClassCount,
+      host: result.angularEncapsulationBreakdown.host,
+      ngDeep: result.angularEncapsulationBreakdown.ngDeep,
+      mediaQueries: result.mediaQueries.length,
+      keyframes: result.keyframes.length,
+      important: result.importantCount,
+      duplicateSelectors: result.duplicateSelectors.length,
+      isCurrent: true,
+    }
+    return [...kpiHistory, current]
+  }, [kpiHistory, result])
 
   const handleCssChange = useCallback(
     (newCss: string) => {
@@ -347,7 +392,7 @@ function AnalyzePage() {
 
           <div className="mt-6">
             <TabsContent value="overview">
-              <OverviewTab result={result} angularHistory={angularHistoryWithCurrent} />
+              <OverviewTab result={result} angularHistory={angularHistoryWithCurrent} kpiHistory={kpiHistoryWithCurrent} />
             </TabsContent>
             <TabsContent value="hardcoded">
               <HardcodedTab result={result} dsCoverage={ds.coverage} dsTokens={ds.tokens} />
