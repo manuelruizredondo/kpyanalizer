@@ -34,6 +34,7 @@ export interface Scan {
   total_selectors: number
   total_declarations: number
   unique_declarations: number
+  angular_encapsulation_count: number
 }
 
 export interface ScanDetail extends Scan {
@@ -89,6 +90,7 @@ export async function saveScan(
       total_selectors: analysisResult.totalSelectors,
       total_declarations: analysisResult.totalDeclarations,
       unique_declarations: analysisResult.uniqueDeclarations,
+      angular_encapsulation_count: analysisResult.angularEncapsulationCount,
     })
     .select('id')
     .single()

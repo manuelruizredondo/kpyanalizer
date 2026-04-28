@@ -3,6 +3,7 @@ import { extractBasicMetrics } from "./metrics"
 import { extractHardcoded } from "./hardcoded"
 import { extractDuplicates } from "./duplicates"
 import { extractSpecificity, computeSpecificityStats } from "./specificity"
+import { extractAngularEncapsulation } from "./angular-encapsulation"
 import { computeHealthScore, getComplexityRating } from "./health-score"
 import type { AnalysisResult } from "@/types/analysis"
 
@@ -13,6 +14,7 @@ export function analyzeCss(css: string): AnalysisResult {
   const dupes = extractDuplicates(ast)
   const specificity = extractSpecificity(ast)
   const specificityStats = computeSpecificityStats(specificity)
+  const angular = extractAngularEncapsulation(ast, css)
 
   const fileSize = new Blob([css]).size
   const lineCount = css.split("\n").length
@@ -54,6 +56,9 @@ export function analyzeCss(css: string): AnalysisResult {
     vendorPrefixCount: basic.vendorPrefixCount,
     shorthandCount: basic.shorthandCount,
     longhandCount: basic.longhandCount,
+    angularEncapsulationCount: angular.count,
+    angularEncapsulationBreakdown: angular.breakdown,
+    angularEncapsulationLocations: angular.locations,
   }
 
   const healthScore = computeHealthScore(partial)

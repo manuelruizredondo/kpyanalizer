@@ -35,6 +35,22 @@ export interface SpecificityEntry {
   line: number
 }
 
+export type AngularEncapsulationKind = 'host' | 'host-context' | 'ng-deep' | 'deep-combinator'
+
+export interface AngularEncapsulationLocation {
+  line: number
+  column: number
+  selector: string
+  kind: AngularEncapsulationKind
+}
+
+export interface AngularEncapsulationBreakdown {
+  host: number
+  hostContext: number
+  ngDeep: number
+  deepCombinator: number
+}
+
 export interface AnalysisResult {
   raw: string
   fileSize: number
@@ -80,6 +96,11 @@ export interface AnalysisResult {
   // Typography
   fontWeights: HardcodedValue[]
   fontFamilies: HardcodedValue[]
+
+  // Angular ViewEncapsulation leak (:host, :host-context, ::ng-deep, /deep/, >>>)
+  angularEncapsulationCount: number
+  angularEncapsulationBreakdown: AngularEncapsulationBreakdown
+  angularEncapsulationLocations: AngularEncapsulationLocation[]
 
   // Complexity summary
   complexityRating: 'low' | 'medium' | 'high' | 'critical'

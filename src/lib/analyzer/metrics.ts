@@ -74,10 +74,16 @@ export function extractBasicMetrics(ast: CssNode): BasicMetrics {
           attributeSelectorCount++
           break
         case "PseudoClassSelector":
-          pseudoClassCount++
+          // Angular ViewEncapsulation pseudos are tracked separately so they
+          // don't double-count against generic pseudo-class hygiene.
+          if (node.name !== "host" && node.name !== "host-context") {
+            pseudoClassCount++
+          }
           break
         case "PseudoElementSelector":
-          pseudoElementCount++
+          if (node.name !== "ng-deep") {
+            pseudoElementCount++
+          }
           break
         case "Declaration":
           totalDeclarations++

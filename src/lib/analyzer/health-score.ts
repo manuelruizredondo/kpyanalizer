@@ -61,6 +61,10 @@ export function computeHealthScore(partial: Omit<AnalysisResult, "healthScore" |
     }
   }
 
+  // Angular ViewEncapsulation leak: -2 per occurrence, max -15
+  // (:host, :host-context, ::ng-deep, /deep/, >>>)
+  score -= Math.min(partial.angularEncapsulationCount * 2, 15)
+
   return Math.max(0, Math.min(100, score))
 }
 

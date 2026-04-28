@@ -134,6 +134,7 @@ export function OverviewTab({ result }: OverviewTabProps) {
     { label: "Prefijos vendor", value: result.vendorPrefixCount, icon: AlertTriangle, severity: sev(result.vendorPrefixCount, 30, 10, true), tooltip: "-webkit-, -moz-... Usa autoprefixer para automatizarlos.", sortOrder: 0 },
     { label: "Selector universal", value: result.universalSelectorCount, icon: Zap, severity: sev(result.universalSelectorCount, 15, 5, true), tooltip: "Uso de * — puede afectar rendimiento si se abusa.", sortOrder: 0 },
     { label: "Max especificidad", value: `${result.maxSpecificity[0]},${result.maxSpecificity[1]},${result.maxSpecificity[2]}`, icon: Zap, severity: result.maxSpecificity[0] > 0 ? "bad" : result.maxSpecificity[1] > 5 ? "warn" : "neutral", tooltip: "Especificidad mas alta encontrada (a,b,c). Si a > 0, hay IDs.", sortOrder: 0 },
+    { label: "Angular (:host/::ng-deep)", value: result.angularEncapsulationCount, icon: AlertTriangle, severity: sev(result.angularEncapsulationCount, 5, 1, true), tooltip: ":host, :host-context, ::ng-deep, /deep/ y >>>. Selectores de Angular ViewEncapsulation que no deberian estar en un CSS global.", sortOrder: 0 },
 
     // Structure (neutral)
     { label: "Peso", value: `${(result.fileSize / 1024).toFixed(1)} KB`, icon: FileText, severity: "neutral", tooltip: "Tamano del archivo CSS.", sortOrder: 0 },
