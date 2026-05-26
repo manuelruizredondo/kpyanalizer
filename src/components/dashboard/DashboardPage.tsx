@@ -309,8 +309,10 @@ export function DashboardPage() {
       setScansLoading(true)
       console.log('[Dashboard] Loading scans for project:', projectId)
 
+      // Embed creator profile so the history table can show who ran each scan.
+      // The FK scans.created_by → profiles(id) lets PostgREST do the join.
       const scansList: Scan[] = await restFetch(
-        `scans?select=*&project_id=eq.${projectId}&order=created_at.desc`
+        `scans?select=*,creator:profiles!created_by(id,full_name,email)&project_id=eq.${projectId}&order=created_at.desc`
       )
       console.log('[Dashboard] Got', scansList.length, 'scans')
       setScans(scansList)
@@ -1647,6 +1649,7 @@ export function DashboardPage() {
                           <thead>
                             <tr className="border-b" style={{ borderColor: 'rgba(11, 31, 22, 0.08)' }}>
                               <th className="text-left py-2 pr-3 text-[11px] font-medium text-[#52695b] uppercase tracking-wider">Etiqueta</th>
+                              <th className="text-left py-2 pr-3 text-[11px] font-medium text-[#52695b] uppercase tracking-wider">Autor</th>
                               <th className="text-left py-2 pr-3 text-[11px] font-medium text-[#52695b] uppercase tracking-wider">Fecha</th>
                               <th className="text-right py-2 pr-3 text-[11px] font-medium text-[#52695b] uppercase tracking-wider">Score</th>
                               <th className="text-right py-2 pr-3 text-[11px] font-medium text-[#52695b] uppercase tracking-wider">Peso</th>
@@ -1669,6 +1672,9 @@ export function DashboardPage() {
                                 <tr key={scan.id} className="border-b last:border-0" style={{ borderColor: 'rgba(11, 31, 22, 0.05)' }}>
                                   <td className="py-2.5 pr-3">
                                     <span className="text-[13px] font-medium text-[#1a2e23]">{scan.label}</span>
+                                  </td>
+                                  <td className="py-2.5 pr-3 text-[12px] text-[#1a2e23] whitespace-nowrap" title={scan.creator?.email || ''}>
+                                    {scan.creator?.full_name || scan.creator?.email?.split('@')[0] || '—'}
                                   </td>
                                   <td className="py-2.5 pr-3 text-[12px] text-[#52695b] whitespace-nowrap">
                                     {new Date(scan.created_at).toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: '2-digit' })}
@@ -2059,6 +2065,10 @@ export function DashboardPage() {
                                       {item.description && (
                                         <p className="text-xs text-[#52695b] mt-0.5">{item.description}</p>
                                       )}
+                                      <p className="text-[10px] text-[#52695b] mt-1" title={item.creator?.email || ''}>
+                                        Creada por <span className="font-medium text-[#1a2e23]">{item.creator?.full_name || item.creator?.email?.split('@')[0] || 'desconocido'}</span>
+                                        <span className="text-[#a3b3ab]"> · {new Date(item.created_at).toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: '2-digit' })}</span>
+                                      </p>
                                     </div>
                                     {/* Actions */}
                                     <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">

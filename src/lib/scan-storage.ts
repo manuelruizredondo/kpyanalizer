@@ -17,6 +17,12 @@ export interface DsCoverageResult {
   overallCoverage: number
 }
 
+export interface Creator {
+  id: string
+  full_name: string
+  email: string
+}
+
 export interface Scan {
   id: string
   project_id: string
@@ -35,6 +41,29 @@ export interface Scan {
   total_declarations: number
   unique_declarations: number
   angular_encapsulation_count: number
+  creator?: Creator | null
+}
+
+/**
+ * Hydrate any list of rows that have a `created_by` field with the matching
+ * profile under the `creator` key. One round-trip to profiles, regardless of
+ * how many rows.
+ */
+async function hydrateCreators<T extends { created_by: string; creator?: Creator | null }>(
+  rows: T[],
+): Promise<T[]> {
+  if (rows.length === 0) return rows
+  const ids = Array.from(new Set(rows.map(r => r.created_by).filter(Boolean)))
+  if (ids.length === 0) return rows
+  const { data, error } = await supabase
+    .from('profiles')
+    .select('id, full_name, email')
+    .in('id', ids)
+  if (error || !data) return rows
+  const byId = new Map<string, Creator>(
+    data.map(p => [p.id, { id: p.id, full_name: p.full_name, email: p.email } as Creator]),
+  )
+  return rows.map(r => ({ ...r, creator: byId.get(r.created_by) ?? null }))
 }
 
 export interface ScanDetail extends Scan {
@@ -114,7 +143,9 @@ export async function saveScan(
 }
 
 /**
- * Get all scans for a project ordered by creation date (newest first)
+ * Get all scans for a project ordered by creation date (newest first).
+ * Each scan is hydrated with `creator` (full_name + email) so the UI can show
+ * who ran the analysis.
  */
 export async function getProjectScans(projectId: string): Promise<Scan[]> {
   const { data, error } = await supabase
@@ -124,7 +155,7 @@ export async function getProjectScans(projectId: string): Promise<Scan[]> {
     .order('created_at', { ascending: false })
 
   if (error) throw error
-  return data || []
+  return hydrateCreators<Scan>(data || [])
 }
 
 /**
@@ -275,6 +306,7 @@ export interface ActionItem {
   created_by: string
   created_at: string
   updated_at: string
+  creator?: Creator | null
 }
 
 /**
@@ -288,7 +320,7 @@ export async function getActionItems(projectId: string): Promise<ActionItem[]> {
     .order('sort_order', { ascending: true })
 
   if (error) throw error
-  return data || []
+  return hydrateCreators<ActionItem>(data || [])
 }
 
 /**
@@ -327,7 +359,8 @@ export async function createActionItem(
     .single()
 
   if (error) throw error
-  return data
+  const [hydrated] = await hydrateCreators<ActionItem>([data])
+  return hydrated
 }
 
 /**
