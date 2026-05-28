@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import type { AnalysisResult } from '@/types/analysis'
 import { useAnalysis } from '@/hooks/useAnalysis'
@@ -10,7 +10,23 @@ import {
   AlertTriangle, CheckCircle, XCircle, ArrowRight, Clock,
   Palette, Type, Bold, Layers, Zap, Copy,
   Code, Target, TrendingDown, ChevronDown, ChevronUp,
+  Plus, Pencil, Trash2, Loader2, X, UserRound,
 } from 'lucide-react'
+import type {
+  ActionItem as DbActionItem,
+  ActionPriority,
+  Project,
+  ScanDetail,
+} from '@/lib/scan-storage'
+import {
+  getProjects,
+  getLatestScanDetail,
+  getActionItems,
+  createActionItem,
+  updateActionItem,
+  deleteActionItem,
+  reorderActionItems,
+} from '@/lib/scan-storage'
 
 // ─── Priority Levels ─────────────────────────────────────────────
 type Priority = 'critical' | 'high' | 'medium' | 'low'
@@ -21,7 +37,7 @@ interface DetailRow {
   swatch?: string // optional color swatch
 }
 
-interface ActionItem {
+interface AutoActionItem {
   id: string
   priority: Priority
   category: string
@@ -46,8 +62,8 @@ const PRIORITY_CONFIG: Record<Priority, { label: string; color: string; bg: stri
 const DS_APPROVED_WEIGHTS = [100, 400, 600, 700]
 
 // ─── Generate Action Items ───────────────────────────────────────
-function generateActions(result: AnalysisResult): ActionItem[] {
-  const actions: ActionItem[] = []
+function generateActions(result: AnalysisResult): AutoActionItem[] {
+  const actions: AutoActionItem[] = []
 
   // 1. !important abuse
   if (result.importantCount > 0) {
@@ -345,12 +361,19 @@ function generateActions(result: AnalysisResult): ActionItem[] {
 }
 
 // ─── Summary Stats ───────────────────────────────────────────────
-function ActionSummary({ actions }: { actions: ActionItem[] }) {
+function ActionSummary({
+  autoActions,
+  manualItems,
+}: {
+  autoActions: AutoActionItem[]
+  manualItems: DbActionItem[]
+}) {
   const counts = useMemo(() => {
     const c = { critical: 0, high: 0, medium: 0, low: 0 }
-    for (const a of actions) c[a.priority]++
+    for (const a of autoActions) c[a.priority]++
+    for (const m of manualItems) c[m.priority]++
     return c
-  }, [actions])
+  }, [autoActions, manualItems])
 
   return (
     <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
@@ -437,32 +460,203 @@ function DetailTable({ headers, rows }: { headers: string[]; rows: DetailRow[] }
 
 // ─── Main Component ──────────────────────────────────────────────
 export function ActionPlanPage() {
-  const { result } = useAnalysis()
+  // Local-session analysis (used as a fallback if no project is selected/loaded)
+  const { result: localResult } = useAnalysis()
 
-  const actions = useMemo(() => {
-    if (!result) return []
-    return generateActions(result)
-  }, [result])
+  // ── Project + scan data loaded from Supabase so the audit is visible
+  //    to every authenticated user, not just whoever ran the analysis locally.
+  const [projects, setProjects] = useState<Project[]>([])
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
+  const [latestDetail, setLatestDetail] = useState<ScanDetail | null>(null)
+  const [loadingProjects, setLoadingProjects] = useState(true)
+  const [loadingDetail, setLoadingDetail] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
 
-  if (!result) {
+  // ── Manual action items (persisted, attributed to a creator) ──
+  const [manualItems, setManualItems] = useState<DbActionItem[]>([])
+  const [manualLoading, setManualLoading] = useState(false)
+
+  // ── Add / edit form state ──
+  const [showForm, setShowForm] = useState(false)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [formTitle, setFormTitle] = useState('')
+  const [formDescription, setFormDescription] = useState('')
+  const [formPriority, setFormPriority] = useState<ActionPriority>('medium')
+  const [savingForm, setSavingForm] = useState(false)
+
+  // Load projects once on mount and pick the most recent as default.
+  useEffect(() => {
+    let cancelled = false
+    setLoadingProjects(true)
+    getProjects()
+      .then(list => {
+        if (cancelled) return
+        setProjects(list)
+        if (list.length > 0) setSelectedProjectId(prev => prev || list[0].id)
+      })
+      .catch(err => {
+        if (cancelled) return
+        console.error('[ActionPlan] Error loading projects:', err)
+        setLoadError(err instanceof Error ? err.message : 'Error al cargar los proyectos')
+      })
+      .finally(() => {
+        if (cancelled) return
+        setLoadingProjects(false)
+      })
+    return () => { cancelled = true }
+  }, [])
+
+  // When the selected project changes, fetch its latest scan + manual items.
+  useEffect(() => {
+    if (!selectedProjectId) {
+      setLatestDetail(null)
+      setManualItems([])
+      return
+    }
+    let cancelled = false
+    setLoadingDetail(true)
+    setManualLoading(true)
+    Promise.all([
+      getLatestScanDetail(selectedProjectId).catch(err => {
+        console.warn('[ActionPlan] No scan detail:', err)
+        return null
+      }),
+      getActionItems(selectedProjectId).catch(err => {
+        console.warn('[ActionPlan] No action items:', err)
+        return [] as DbActionItem[]
+      }),
+    ]).then(([detail, items]) => {
+      if (cancelled) return
+      setLatestDetail(detail)
+      setManualItems(items)
+    }).finally(() => {
+      if (cancelled) return
+      setLoadingDetail(false)
+      setManualLoading(false)
+    })
+    return () => { cancelled = true }
+  }, [selectedProjectId])
+
+  // Prefer the persisted scan analysis (shared across users) over the local
+  // in-memory analysis. Falls back to local so a user who pasted CSS but has
+  // no projects yet can still see the auto-generated audit.
+  const activeResult: AnalysisResult | null =
+    (latestDetail?.analysis_data as AnalysisResult | undefined) ?? localResult ?? null
+
+  const autoActions = useMemo(() => {
+    if (!activeResult) return []
+    return generateActions(activeResult)
+  }, [activeResult])
+
+  const refreshManual = async () => {
+    if (!selectedProjectId) return
+    try {
+      setManualLoading(true)
+      const items = await getActionItems(selectedProjectId)
+      setManualItems(items)
+    } catch (err) {
+      console.error('[ActionPlan] Error refreshing items:', err)
+    } finally {
+      setManualLoading(false)
+    }
+  }
+
+  const resetForm = () => {
+    setFormTitle('')
+    setFormDescription('')
+    setFormPriority('medium')
+    setEditingId(null)
+    setShowForm(false)
+  }
+
+  const handleSaveForm = async () => {
+    if (!selectedProjectId || !formTitle.trim() || savingForm) return
+    try {
+      setSavingForm(true)
+      if (editingId) {
+        await updateActionItem(editingId, {
+          title: formTitle.trim(),
+          description: formDescription.trim(),
+          priority: formPriority,
+        })
+      } else {
+        await createActionItem(
+          selectedProjectId,
+          formTitle.trim(),
+          formPriority,
+          formDescription.trim(),
+        )
+      }
+      resetForm()
+      await refreshManual()
+    } catch (err) {
+      console.error('[ActionPlan] Error saving item:', err)
+    } finally {
+      setSavingForm(false)
+    }
+  }
+
+  const handleEdit = (item: DbActionItem) => {
+    setEditingId(item.id)
+    setFormTitle(item.title)
+    setFormDescription(item.description || '')
+    setFormPriority(item.priority)
+    setShowForm(true)
+  }
+
+  const handleDelete = async (id: string) => {
+    try {
+      await deleteActionItem(id)
+      await refreshManual()
+    } catch (err) {
+      console.error('[ActionPlan] Error deleting item:', err)
+    }
+  }
+
+  const handleMove = async (index: number, direction: 'up' | 'down') => {
+    const next = [...manualItems]
+    const swap = direction === 'up' ? index - 1 : index + 1
+    if (swap < 0 || swap >= next.length) return
+    ;[next[index], next[swap]] = [next[swap], next[index]]
+    setManualItems(next)
+    try {
+      await reorderActionItems(next.map(i => i.id))
+    } catch (err) {
+      console.error('[ActionPlan] Error reordering items:', err)
+      await refreshManual()
+    }
+  }
+
+  // ─── Loading / Empty states ────────────────────────────────────
+  if (loadingProjects) {
+    return (
+      <div className="space-y-6 py-8 px-8 max-w-[1440px] mx-auto w-full">
+        <div className="flex items-center gap-2 text-[#52695b]">
+          <Loader2 size={16} className="animate-spin text-[#006c48]" />
+          <span className="text-sm">Cargando auditoría…</span>
+        </div>
+      </div>
+    )
+  }
+
+  // No projects in the DB at all and no local result either
+  if (projects.length === 0 && !activeResult) {
     return (
       <div className="space-y-6 py-8 px-8 max-w-[1440px] mx-auto w-full">
         <div>
           <h2 className="text-xl font-semibold text-[#1a2e23]">Auditoría CSS</h2>
           <p className="text-sm text-[#52695b] mt-1">
-            Primero analiza un CSS en la página{' '}
+            Crea un proyecto y guarda un escaneo desde{' '}
             <Link to="/analyze" className="text-[#006c48] underline font-medium">Analizar</Link>{' '}
-            para generar el plan de acción.
+            para que todo el equipo pueda ver la auditoría.
           </p>
         </div>
         <Card className="p-12 text-center">
           <Target className="h-16 w-16 mx-auto mb-4 text-[#52695b]/30" />
-          <h3 className="text-lg font-semibold text-[#52695b] mb-2">
-            Sin datos para analizar
-          </h3>
+          <h3 className="text-lg font-semibold text-[#52695b] mb-2">Aún no hay auditorías</h3>
           <p className="text-sm text-[#8a9b92] max-w-md mx-auto mb-6">
-            Pega tu CSS compilado en la página de Analizar. Una vez procesado, vuelve aquí
-            para ver un plan de acción priorizado con todos los problemas detectados y cómo resolverlos.
+            Pega tu CSS, guárdalo dentro de un proyecto y la auditoría quedará disponible para
+            cualquier usuario autenticado.
           </p>
           <Link
             to="/analyze"
@@ -477,30 +671,177 @@ export function ActionPlanPage() {
     )
   }
 
-  const healthColor = result.healthScore >= 70 ? '#006c48' : result.healthScore >= 40 ? '#a67c00' : '#9e2b25'
+  const healthColor = activeResult
+    ? activeResult.healthScore >= 70 ? '#006c48'
+    : activeResult.healthScore >= 40 ? '#a67c00'
+    : '#9e2b25'
+    : '#52695b'
+
+  // Severity colors used by the manual-action form & cards
+  const sevColor: Record<ActionPriority, string> = { critical: '#9e2b25', high: '#a67c00', medium: '#52695b', low: '#006c48' }
+  const sevBg: Record<ActionPriority, string> = { critical: '#fbe8e6', high: '#fbf2d9', medium: '#f0f2f1', low: '#e5f2ec' }
+  const sevLabel: Record<ActionPriority, string> = { critical: 'Crítico', high: 'Alto', medium: 'Medio', low: 'Bajo' }
+
+  const totalActions = autoActions.length + manualItems.length
 
   return (
     <div className="space-y-6 py-8 px-8 max-w-[1440px] mx-auto w-full">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h2 className="text-xl font-semibold text-[#1a2e23]">Auditoría CSS</h2>
           <p className="text-sm text-[#52695b] mt-1">
-            {actions.length} acciones identificadas para mejorar tu CSS
-            <span className="mx-2">·</span>
-            Health Score: <span className="font-bold" style={{ color: healthColor }}>{result.healthScore}/100</span>
-            <span className="mx-2">·</span>
-            {(result.fileSize / 1024).toFixed(0)} KB · {result.lineCount.toLocaleString()} lineas
+            {totalActions} {totalActions === 1 ? 'acción' : 'acciones'} en el proyecto seleccionado
+            {activeResult && (
+              <>
+                <span className="mx-2">·</span>
+                Health Score: <span className="font-bold" style={{ color: healthColor }}>{activeResult.healthScore}/100</span>
+                <span className="mx-2">·</span>
+                {(activeResult.fileSize / 1024).toFixed(0)} KB · {activeResult.lineCount.toLocaleString()} lineas
+              </>
+            )}
           </p>
+          {loadError && (
+            <p className="text-xs text-[#9e2b25] mt-1">{loadError}</p>
+          )}
+        </div>
+
+        <div className="flex items-center gap-2">
+          {projects.length > 0 && (
+            <select
+              value={selectedProjectId || ''}
+              onChange={(e) => setSelectedProjectId(e.target.value || null)}
+              className="px-3 py-2 rounded-lg text-sm bg-white text-[#0b1f16] focus:outline-none focus:ring-2 focus:ring-[#006c48]"
+              style={{ border: '1px solid rgba(11, 31, 22, 0.14)' }}
+            >
+              {projects.map(p => (
+                <option key={p.id} value={p.id}>{p.name}</option>
+              ))}
+            </select>
+          )}
+          <Button
+            onClick={() => { resetForm(); setShowForm(true) }}
+            size="sm"
+            disabled={!selectedProjectId}
+            className="gap-2 h-9"
+            style={{ background: '#012d1d' }}
+          >
+            <Plus size={14} />
+            Añadir acción
+          </Button>
         </div>
       </div>
 
       {/* Summary Cards */}
-      <ActionSummary actions={actions} />
+      <ActionSummary autoActions={autoActions} manualItems={manualItems} />
 
-      {/* Action Items by Priority */}
+      {/* Loading indicator while pulling the latest scan */}
+      {loadingDetail && (
+        <div className="flex items-center gap-2 text-[#52695b]">
+          <Loader2 size={14} className="animate-spin text-[#006c48]" />
+          <span className="text-xs">Cargando último escaneo del proyecto…</span>
+        </div>
+      )}
+
+      {/* Manual (user-created) action items — shown on top so creator attribution is visible first */}
+      {manualItems.length > 0 && (
+        <div>
+          <div className="flex items-center gap-2 mb-3">
+            <UserRound size={16} className="text-[#006c48]" />
+            <h3 className="text-sm font-semibold uppercase tracking-wider text-[#006c48]">
+              Acciones del equipo ({manualItems.length})
+            </h3>
+            <div className="flex-1 h-px bg-[#006c48]/20" />
+          </div>
+          <div className="space-y-3">
+            {manualItems.map((item, idx) => (
+              <Card
+                key={item.id}
+                className="p-4 group"
+                style={{ borderLeft: `3px solid ${sevColor[item.priority]}` }}
+              >
+                <div className="flex items-start gap-3">
+                  {/* Reorder */}
+                  <div className="flex flex-col gap-0.5 shrink-0 pt-0.5">
+                    <button
+                      onClick={() => handleMove(idx, 'up')}
+                      disabled={idx === 0}
+                      className="p-0.5 rounded hover:bg-[#f0f2f1] disabled:opacity-20 transition-opacity"
+                      title="Subir"
+                    >
+                      <ChevronUp size={14} className="text-[#52695b]" />
+                    </button>
+                    <button
+                      onClick={() => handleMove(idx, 'down')}
+                      disabled={idx === manualItems.length - 1}
+                      className="p-0.5 rounded hover:bg-[#f0f2f1] disabled:opacity-20 transition-opacity"
+                      title="Bajar"
+                    >
+                      <ChevronDown size={14} className="text-[#52695b]" />
+                    </button>
+                  </div>
+                  {/* Content */}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 mb-1 flex-wrap">
+                      <Badge
+                        className="text-[10px] px-1.5 py-0"
+                        style={{ background: sevBg[item.priority], color: sevColor[item.priority] }}
+                      >
+                        {sevLabel[item.priority]}
+                      </Badge>
+                      <h4 className="text-sm font-semibold text-[#1a2e23]">{item.title}</h4>
+                    </div>
+                    {item.description && (
+                      <p className="text-xs text-[#52695b] mt-0.5">{item.description}</p>
+                    )}
+                    <p
+                      className="text-[10px] text-[#52695b] mt-2 flex items-center gap-1"
+                      title={item.creator?.email || ''}
+                    >
+                      <UserRound size={11} className="text-[#52695b]" />
+                      Creada por{' '}
+                      <span className="font-medium text-[#1a2e23]">
+                        {item.creator?.full_name || item.creator?.email?.split('@')[0] || 'desconocido'}
+                      </span>
+                      <span className="text-[#a3b3ab]">
+                        {' '}· {new Date(item.created_at).toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: '2-digit' })}
+                      </span>
+                    </p>
+                  </div>
+                  {/* Actions */}
+                  <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                    <button
+                      onClick={() => handleEdit(item)}
+                      className="p-1.5 rounded hover:bg-[#f0f2f1] transition-colors"
+                      title="Editar"
+                    >
+                      <Pencil size={13} className="text-[#52695b]" />
+                    </button>
+                    <button
+                      onClick={() => handleDelete(item.id)}
+                      className="p-1.5 rounded hover:bg-[#fbe8e6] transition-colors"
+                      title="Eliminar"
+                    >
+                      <Trash2 size={13} className="text-[#9e2b25]" />
+                    </button>
+                  </div>
+                </div>
+              </Card>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {manualLoading && manualItems.length === 0 && (
+        <div className="flex items-center gap-2 text-[#52695b]">
+          <Loader2 size={14} className="animate-spin text-[#006c48]" />
+          <span className="text-xs">Cargando acciones del equipo…</span>
+        </div>
+      )}
+
+      {/* Auto-generated actions grouped by priority */}
       {(['critical', 'high', 'medium', 'low'] as Priority[]).map(priority => {
-        const items = actions.filter(a => a.priority === priority)
+        const items = autoActions.filter(a => a.priority === priority)
         if (items.length === 0) return null
         const cfg = PRIORITY_CONFIG[priority]
 
@@ -509,7 +850,7 @@ export function ActionPlanPage() {
             <div className="flex items-center gap-2 mb-3">
               {cfg.icon}
               <h3 className="text-sm font-semibold uppercase tracking-wider" style={{ color: cfg.color }}>
-                {cfg.label} ({items.length})
+                Auto · {cfg.label} ({items.length})
               </h3>
               <div className="flex-1 h-px" style={{ backgroundColor: `${cfg.color}20` }} />
             </div>
@@ -553,13 +894,116 @@ export function ActionPlanPage() {
         )
       })}
 
-      {/* All good message */}
-      {actions.length === 0 && (
+      {/* All good message — only when there's literally nothing to do */}
+      {totalActions === 0 && activeResult && (
         <Card className="p-8 text-center bg-[#e0f5ec] border-[#006c48]/20">
           <CheckCircle className="h-12 w-12 mx-auto mb-3 text-[#006c48]" />
-          <h3 className="text-lg font-semibold text-[#006c48] mb-1">Tu CSS esta en buen estado</h3>
-          <p className="text-sm text-[#3d5a4a]">No se encontraron problemas significativos. Sigue asi.</p>
+          <h3 className="text-lg font-semibold text-[#006c48] mb-1">Tu CSS está en buen estado</h3>
+          <p className="text-sm text-[#3d5a4a]">No se encontraron problemas significativos. Sigue así.</p>
         </Card>
+      )}
+
+      {/* If we have a project but no scan yet and no local CSS, guide the user */}
+      {!activeResult && !loadingDetail && selectedProjectId && (
+        <Card className="p-8 text-center">
+          <Target className="h-12 w-12 mx-auto mb-3 text-[#52695b]/40" />
+          <h3 className="text-base font-semibold text-[#52695b] mb-1">Este proyecto no tiene escaneos todavía</h3>
+          <p className="text-sm text-[#8a9b92] max-w-md mx-auto mb-4">
+            Guarda un escaneo en este proyecto desde la página Analizar y la auditoría aparecerá aquí
+            para todos los miembros del equipo.
+          </p>
+          <Link
+            to="/analyze"
+            className="inline-flex items-center gap-2 px-4 py-2 text-white rounded-lg text-sm font-medium hover:opacity-90 transition-opacity"
+            style={{ background: '#012d1d' }}
+          >
+            <Code size={16} />
+            Ir a Analizar
+          </Link>
+        </Card>
+      )}
+
+      {/* ─── Add / Edit modal ───────────────────────────────────── */}
+      {showForm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center" onClick={resetForm}>
+          <div className="absolute inset-0 bg-black/30 backdrop-blur-sm" />
+          <div
+            className="relative w-full max-w-md mx-4 rounded-2xl p-6 shadow-xl"
+            style={{ background: '#ffffff', border: '1px solid rgba(11, 31, 22, 0.08)' }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between mb-5">
+              <h3 className="text-base font-semibold text-[#1a2e23]">
+                {editingId ? 'Editar acción' : 'Nueva acción'}
+              </h3>
+              <button onClick={resetForm} className="p-1.5 rounded-lg hover:bg-[#f0f2f1] transition-colors">
+                <X size={18} className="text-[#52695b]" />
+              </button>
+            </div>
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-[#1a2e23] mb-1.5">Título</label>
+                <input
+                  type="text"
+                  value={formTitle}
+                  onChange={(e) => setFormTitle(e.target.value)}
+                  placeholder="Ej: Migrar variables de color a tokens DS..."
+                  className="w-full px-3 py-2.5 rounded-lg text-sm bg-white text-[#0b1f16] focus:outline-none focus:ring-2 focus:ring-[#006c48]"
+                  style={{ border: '1px solid rgba(11, 31, 22, 0.14)' }}
+                  autoFocus
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-[#1a2e23] mb-1.5">Prioridad</label>
+                <div className="flex gap-2">
+                  {(['critical', 'high', 'medium', 'low'] as ActionPriority[]).map((p) => (
+                    <button
+                      key={p}
+                      onClick={() => setFormPriority(p)}
+                      className="flex-1 px-3 py-2 rounded-lg text-xs font-medium transition-all"
+                      style={{
+                        background: formPriority === p ? sevBg[p] : 'transparent',
+                        color: sevColor[p],
+                        border: `1.5px solid ${formPriority === p ? sevColor[p] : 'rgba(11,31,22,0.1)'}`,
+                        opacity: formPriority === p ? 1 : 0.5,
+                      }}
+                    >
+                      {sevLabel[p]}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-[#1a2e23] mb-1.5">
+                  Descripción <span className="text-[#8a9b92] font-normal">(opcional)</span>
+                </label>
+                <textarea
+                  value={formDescription}
+                  onChange={(e) => setFormDescription(e.target.value)}
+                  placeholder="Contexto, pasos, notas..."
+                  rows={3}
+                  className="w-full px-3 py-2.5 rounded-lg text-sm bg-white text-[#0b1f16] resize-none focus:outline-none focus:ring-2 focus:ring-[#006c48]"
+                  style={{ border: '1px solid rgba(11, 31, 22, 0.14)' }}
+                />
+              </div>
+              <div className="flex gap-3 pt-2">
+                <Button
+                  className="flex-1 h-10"
+                  style={{ background: '#012d1d' }}
+                  onClick={handleSaveForm}
+                  disabled={!formTitle.trim() || savingForm}
+                >
+                  {savingForm
+                    ? 'Guardando…'
+                    : editingId ? 'Guardar cambios' : 'Añadir acción'}
+                </Button>
+                <Button variant="outline" className="flex-1 h-10" onClick={resetForm}>
+                  Cancelar
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )
