@@ -15,6 +15,7 @@
 
 import { csstree } from "./css-parser"
 import type { W3cValidationResult, W3cIssue } from "@/types/w3c"
+import { isHelperImportantRule } from "./analyzer/helpers"
 
 /**
  * Descriptors valid inside @font-face — these are NOT regular CSS properties
@@ -94,6 +95,9 @@ export function validateCssLocal(css: string): W3cValidationResult {
   void charsetFound // used below as write-only flag
   let firstRuleSeen = false
   let insideFontFace = false
+  // Helpers utility (.p-0\!, .mb-0\!, etc.) tienen !important deliberado
+  // — no se emite warning sobre ellos.
+  let inHelperRule = false
 
   csstree.walk(ast, {
     enter(node: import("css-tree").CssNode) {
@@ -105,6 +109,7 @@ export function validateCssLocal(css: string): W3cValidationResult {
       // Track current selector for context
       if (node.type === "Rule" && node.prelude) {
         currentSelector = csstree.generate(node.prelude)
+        inHelperRule = isHelperImportantRule(node.prelude)
 
         // Check for empty rules
         if (node.block && node.block.type === "Block") {
@@ -171,8 +176,8 @@ export function validateCssLocal(css: string): W3cValidationResult {
           return // Don't validate vendor-prefixed values further
         }
 
-        // !important warning
-        if (node.important) {
+        // !important warning (excluye helpers .p-0\!, .mb-0\!, etc.)
+        if (node.important && !inHelperRule) {
           warnings.push({
             line: node.loc?.start?.line ?? 0,
             message: `Uso de !important en "${property}". Puede causar problemas de especificidad.`,

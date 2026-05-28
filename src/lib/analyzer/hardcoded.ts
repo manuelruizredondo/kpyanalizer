@@ -1,6 +1,7 @@
 import type { CssNode } from "css-tree"
 import { csstree } from "../css-parser"
 import type { HardcodedValue, LocationReference } from "@/types/analysis"
+import { isHelperImportantRule } from "./helpers"
 
 const CSS_NAMED_COLORS = new Set([
   "aliceblue","antiquewhite","aqua","aquamarine","azure","beige","bisque","black",
@@ -128,17 +129,21 @@ export function extractHardcoded(ast: CssNode): HardcodedResults {
 
   let currentSelector = ""
   let inCustomProperty = false
+  // Las clases helper (.p-0\!, .mb-0\!, etc.) llevan !important intencional;
+  // no se contabilizan como uso problemático de !important.
+  let inHelperRule = false
 
   csstree.walk(ast, {
     enter(node: import("css-tree").CssNode) {
       if (node.type === "Rule" && node.prelude) {
         currentSelector = csstree.generate(node.prelude)
+        inHelperRule = isHelperImportantRule(node.prelude)
       }
 
       if (node.type === "Declaration") {
         inCustomProperty = node.property.startsWith("--")
 
-        if (node.important) {
+        if (node.important && !inHelperRule) {
           importants.push({
             line: node.loc?.start?.line ?? 0,
             column: node.loc?.start?.column ?? 0,

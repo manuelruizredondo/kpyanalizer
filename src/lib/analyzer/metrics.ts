@@ -1,5 +1,6 @@
 import type { CssNode } from "css-tree"
 import { csstree } from "../css-parser"
+import { isHelperImportantRule } from "./helpers"
 
 export interface BasicMetrics {
   classCount: number
@@ -55,9 +56,16 @@ export function extractBasicMetrics(ast: CssNode): BasicMetrics {
   let vendorPrefixCount = 0
   let shorthandCount = 0
   let longhandCount = 0
+  // Pista para saber si la declaración actual vive dentro de una regla
+  // helper (.p-0\!, .mb-0\!, etc.) cuyos !important son intencionales y no
+  // deben contabilizar como abuso de especificidad.
+  let inHelperRule = false
 
   csstree.walk(ast, {
     enter(node: import("css-tree").CssNode) {
+      if (node.type === "Rule") {
+        inHelperRule = isHelperImportantRule(node.prelude)
+      }
       switch (node.type) {
         case "ClassSelector":
           classCount++
@@ -87,7 +95,7 @@ export function extractBasicMetrics(ast: CssNode): BasicMetrics {
           break
         case "Declaration":
           totalDeclarations++
-          if (node.important) {
+          if (node.important && !inHelperRule) {
             importantCount++
           }
           if (node.property.startsWith("--")) {
