@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import type { AnalysisResult } from '@/types/analysis'
 import { useAnalysis } from '@/hooks/useAnalysis'
 import { classifyFamily } from '@/lib/font-utils'
+import { getScoreBand } from '@/lib/score-band'
 import { Card } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -671,11 +672,7 @@ export function ActionPlanPage() {
     )
   }
 
-  const healthColor = activeResult
-    ? activeResult.healthScore >= 70 ? '#006c48'
-    : activeResult.healthScore >= 40 ? '#a67c00'
-    : '#9e2b25'
-    : '#52695b'
+  const healthColor = activeResult ? getScoreBand(activeResult.healthScore).color : '#52695b'
 
   // Severity colors used by the manual-action form & cards
   const sevColor: Record<ActionPriority, string> = { critical: '#9e2b25', high: '#a67c00', medium: '#52695b', low: '#006c48' }

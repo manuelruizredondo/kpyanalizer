@@ -60,11 +60,19 @@ export function extractBasicMetrics(ast: CssNode): BasicMetrics {
   // helper (.p-0\!, .mb-0\!, etc.) cuyos !important son intencionales y no
   // deben contabilizar como abuso de especificidad.
   let inHelperRule = false
+  // Profundidad dentro de argumentos de pseudo-clases funcionales
+  // (:not, :is, :where, :has). Sus `Selector` internos no son reglas reales
+  // y no deben inflar totalSelectors (denominador de varias penalizaciones).
+  let pseudoArgDepth = 0
+  const FUNCTIONAL_PSEUDOS = new Set(["not", "is", "where", "has"])
 
   csstree.walk(ast, {
     enter(node: import("css-tree").CssNode) {
       if (node.type === "Rule") {
         inHelperRule = isHelperImportantRule(node.prelude)
+      }
+      if (node.type === "PseudoClassSelector" && FUNCTIONAL_PSEUDOS.has(node.name.toLowerCase())) {
+        pseudoArgDepth++
       }
       switch (node.type) {
         case "ClassSelector":
@@ -111,8 +119,15 @@ export function extractBasicMetrics(ast: CssNode): BasicMetrics {
           }
           break
         case "Selector":
-          totalSelectors++
+          if (pseudoArgDepth === 0) {
+            totalSelectors++
+          }
           break
+      }
+    },
+    leave(node: import("css-tree").CssNode) {
+      if (node.type === "PseudoClassSelector" && FUNCTIONAL_PSEUDOS.has(node.name.toLowerCase())) {
+        pseudoArgDepth--
       }
     },
   })

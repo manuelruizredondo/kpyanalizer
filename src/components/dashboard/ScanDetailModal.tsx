@@ -5,6 +5,7 @@ import type { AnalysisResult } from '@/types/analysis'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { getScoreBand } from '@/lib/score-band'
 import { X, Copy, Download, ChevronDown, ChevronRight, Check } from 'lucide-react'
 
 interface ScanDetailModalProps {
@@ -69,11 +70,6 @@ export function ScanDetailModal({ scanId, onClose }: ScanDetailModalProps) {
     }
   }
 
-  const getScoreBadge = (score: number) => {
-    if (score >= 70) return 'bg-[#e0f5ec] text-[#006c48]'
-    if (score >= 40) return 'bg-[#fef6e0] text-[#a67c00]'
-    return 'bg-[#fef2f1] text-[#9e2b25]'
-  }
 
   if (loading) {
     return (
@@ -122,8 +118,8 @@ export function ScanDetailModal({ scanId, onClose }: ScanDetailModalProps) {
               <div className="bg-[#f0f2f1] p-4 rounded-xl border-0">
                 <p className="text-sm text-[#3d5a4a]">Score de Salud</p>
                 <div className="flex items-center gap-2 mt-1">
-                  <Badge className={getScoreBadge(scan.health_score)}>
-                    {scan.health_score}
+                  <Badge style={{ backgroundColor: getScoreBand(scan.health_score).bg, color: getScoreBand(scan.health_score).color }}>
+                    {scan.health_score} · {getScoreBand(scan.health_score).label}
                   </Badge>
                 </div>
               </div>

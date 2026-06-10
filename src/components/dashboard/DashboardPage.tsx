@@ -9,10 +9,11 @@ import { ScanDetailModal } from './ScanDetailModal'
 import { ConfrontarTab } from './ConfrontarTab'
 import { InfoTooltip } from '@/components/ui/InfoTooltip'
 import { ScoreRing } from '@/components/ui/ScoreRing'
+import { getScoreBand } from '@/lib/score-band'
 import { KpiTrendCard } from '@/components/charts/KpiTrendCard'
 import { classifyFamily } from '@/lib/font-utils'
 import type { Project, Scan, ScanDetail, ActionItem, ActionPriority } from '@/lib/scan-storage'
-import { getActionItems, createActionItem, updateActionItem, deleteActionItem, reorderActionItems, deleteScan, getScanDetail } from '@/lib/scan-storage'
+import { getActionItems, createActionItem, updateActionItem, deleteActionItem, reorderActionItems, deleteScan, getScanDetail, recomputeProjectScans } from '@/lib/scan-storage'
 import { analyzeCss } from '@/lib/analyzer'
 import {
   LineChart,
@@ -60,6 +61,7 @@ import {
   Zap,
   Grid3X3,
   Download,
+  RefreshCw,
 } from 'lucide-react'
 
 
@@ -176,6 +178,89 @@ function ChartTitle({ title, tooltip, first, last, downIsGood = true }: {
   )
 }
 
+// ─── Vista ligera `scan_metrics` (solo contadores, sin arrays pesadas) ──
+interface ScanMetricsRow {
+  scan_id: string
+  health_score: number
+  important_count: number
+  id_count: number
+  variable_count: number
+  reuse_ratio: number
+  vendor_prefix_count: number
+  universal_count: number
+  pseudo_elements: number
+  pseudo_classes: number
+  angular_count: number
+  ang_host: number
+  ang_host_context: number
+  ang_ng_deep: number
+  ang_deep_combinator: number
+  colors_count: number
+  font_sizes_count: number
+  spacing_count: number
+  zindex_count: number
+  dup_selectors: number
+  dup_declarations: number
+  media_queries: number
+  keyframes_count: number
+  font_families: { value: string; normalized: string; count: number }[]
+}
+
+// Sintetiza un AnalysisResult mínimo a partir de los contadores de la vista
+// más las columnas denormalizadas del scan. Las arrays se rellenan con su
+// .length correcto usando un placeholder inerte (NO undefined: cualquier
+// acceso a .count/.normalized de un slot vacío reventaría el render entero).
+// `fontFamilies` sí lleva datos reales (es pequeño) para clasificar fuentes.
+const EMPTY_HV = Object.freeze({ value: '', normalized: '', count: 0, locations: [] })
+
+function synthAnalysisFromMetrics(m: ScanMetricsRow, scan: Scan): AnalysisResult {
+  const arr = (n: number) => new Array(Math.max(0, n | 0)).fill(EMPTY_HV)
+  return {
+    raw: '',
+    fileSize: scan.file_size ?? 0,
+    lineCount: scan.line_count ?? 0,
+    classCount: scan.class_count ?? 0,
+    totalSelectors: scan.total_selectors ?? 0,
+    totalDeclarations: scan.total_declarations ?? 0,
+    uniqueDeclarations: scan.unique_declarations ?? 0,
+    healthScore: m.health_score,
+    importantCount: m.important_count,
+    idCount: m.id_count,
+    variableCount: m.variable_count,
+    reuseRatio: Number(m.reuse_ratio) || 0,
+    vendorPrefixCount: m.vendor_prefix_count,
+    universalSelectorCount: m.universal_count,
+    pseudoElementCount: m.pseudo_elements,
+    pseudoClassCount: m.pseudo_classes,
+    attributeSelectorCount: 0,
+    shorthandCount: 0,
+    longhandCount: 0,
+    maxSpecificity: [0, 0, 0],
+    avgSpecificity: 0,
+    deepestNesting: 0,
+    specificityDistribution: [],
+    importants: [],
+    angularEncapsulationCount: m.angular_count,
+    angularEncapsulationBreakdown: {
+      host: m.ang_host,
+      hostContext: m.ang_host_context,
+      ngDeep: m.ang_ng_deep,
+      deepCombinator: m.ang_deep_combinator,
+    },
+    angularEncapsulationLocations: [],
+    colors: arr(m.colors_count),
+    fontSizes: arr(m.font_sizes_count),
+    spacingValues: arr(m.spacing_count),
+    zIndexValues: arr(m.zindex_count),
+    duplicateSelectors: arr(m.dup_selectors),
+    duplicateDeclarations: arr(m.dup_declarations),
+    mediaQueries: arr(m.media_queries),
+    keyframes: arr(m.keyframes_count),
+    fontFamilies: m.font_families || [],
+    fontWeights: [],
+  } as unknown as AnalysisResult
+}
+
 // ─── Main Component ─────────────────────────────────────────────────
 export function DashboardPage() {
   const { signOut } = useAuth()
@@ -189,6 +274,8 @@ export function DashboardPage() {
   const [selectedScanId, setSelectedScanId] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState('resumen')
   const [allScanDetails, setAllScanDetails] = useState<Map<string, ScanDetail>>(new Map())
+  const [recomputing, setRecomputing] = useState(false)
+  const [recomputeMsg, setRecomputeMsg] = useState<string | null>(null)
 
   // ── Action items state ──
   const [actionItems, setActionItems] = useState<ActionItem[]>([])
@@ -287,10 +374,10 @@ export function DashboardPage() {
     }
   }, [selectedProjectId])
 
-  const restFetch = async (path: string) => {
+  const restFetch = async (path: string, timeoutMs = 10000) => {
     const { data: { session } } = await supabase.auth.getSession()
     const controller = new AbortController()
-    const t = setTimeout(() => controller.abort(), 10000)
+    const t = setTimeout(() => controller.abort(), timeoutMs)
     const r = await fetch(`https://lqgdrkwabcjrnnthlrmi.supabase.co/rest/v1/${path}`, {
       signal: controller.signal,
       headers: {
@@ -320,25 +407,59 @@ export function DashboardPage() {
       if (scansList.length > 0) {
         const scanIds = scansList.map(s => s.id)
         try {
-          const details = await restFetch(
-            `scan_details?select=scan_id,analysis_data,w3c_validation,ds_coverage&scan_id=in.(${scanIds.join(',')})`
+          // El analysis_data completo pesa varios MB por escaneo (arrays de
+          // localizaciones + distribución de especificidad). Traer los 11 de
+          // golpe supera el statement_timeout (8s) del rol authenticated.
+          //
+          // Para las gráficas de evolución solo necesitamos CONTADORES, así que
+          // los leemos de la vista ligera `scan_metrics` (una query, unos KB) y
+          // sintetizamos un analysis_data mínimo (arrays con solo .length) que
+          // los constructores de datos consumen sin cambios. El detalle PESADO
+          // (arrays reales) se trae solo para el ÚLTIMO escaneo, que es el que
+          // alimenta las vistas de detalle (Tipografía, hardcodeados, etc.).
+          const metricsRows: ScanMetricsRow[] = await restFetch(
+            `scan_metrics?select=*&scan_id=in.(${scanIds.join(',')})`
           )
-          const detailMap = new Map<string, ScanDetail>()
-          for (const d of details) {
-            const scan = scansList.find(s => s.id === d.scan_id)
-            if (scan) {
-              detailMap.set(d.scan_id, {
-                ...scan,
-                analysis_data: d.analysis_data || {},
-                w3c_validation: d.w3c_validation,
-                ds_coverage: d.ds_coverage,
-              } as ScanDetail)
-            }
-          }
-          setAllScanDetails(detailMap)
+          const metricsByScan = new Map(metricsRows.map(m => [m.scan_id, m]))
 
-          const latestD = detailMap.get(scansList[0].id)
-          setLatestDetail(latestD || null)
+          const detailMap = new Map<string, ScanDetail>()
+          for (const scan of scansList) {
+            const m = metricsByScan.get(scan.id)
+            if (!m) continue
+            detailMap.set(scan.id, {
+              ...scan,
+              analysis_data: synthAnalysisFromMetrics(m, scan),
+            } as ScanDetail)
+          }
+
+          // Detalle completo del último escaneo (1 sola fila → bajo el timeout
+          // del servidor). Son ~6MB de JSON: damos 30s de margen de DESCARGA
+          // (el timeout de 10s por defecto se queda corto en conexiones lentas).
+          const latestId = scansList[0].id
+          try {
+            const latestRows = await restFetch(
+              `scan_details?select=analysis_data,w3c_validation,ds_coverage&scan_id=eq.${latestId}&limit=1`,
+              30000
+            )
+            const ld = Array.isArray(latestRows) ? latestRows[0] : undefined
+            if (ld) {
+              const fullLatest: ScanDetail = {
+                ...scansList[0],
+                analysis_data: ld.analysis_data || {},
+                w3c_validation: ld.w3c_validation,
+                ds_coverage: ld.ds_coverage,
+              } as ScanDetail
+              detailMap.set(latestId, fullLatest)
+              setLatestDetail(fullLatest)
+            } else {
+              setLatestDetail(detailMap.get(latestId) || null)
+            }
+          } catch (latestErr) {
+            console.warn('[Dashboard] Could not load latest full detail:', latestErr)
+            setLatestDetail(detailMap.get(latestId) || null)
+          }
+
+          setAllScanDetails(detailMap)
         } catch (detailErr) {
           console.warn('[Dashboard] Could not load scan details:', detailErr)
           setLatestDetail(null)
@@ -353,6 +474,27 @@ export function DashboardPage() {
       setLatestDetail(null)
     } finally {
       setScansLoading(false)
+    }
+  }
+
+  // Re-analiza todos los escaneos del proyecto con el algoritmo actual
+  // (útil tras cambiar el cálculo del health score) y recarga la vista.
+  const handleRecompute = async () => {
+    if (!selectedProjectId || recomputing) return
+    setRecomputing(true)
+    setRecomputeMsg(null)
+    try {
+      const res = await recomputeProjectScans(selectedProjectId)
+      await loadScans(selectedProjectId)
+      const parts = [`${res.updated} actualizados`]
+      if (res.skipped > 0) parts.push(`${res.skipped} omitidos`)
+      if (res.errors > 0) parts.push(`${res.errors} con error`)
+      setRecomputeMsg(`✓ ${parts.join(' · ')} de ${res.total}`)
+    } catch (err) {
+      console.error('[Dashboard] Error recomputing scores:', err)
+      setRecomputeMsg('✗ Error al recalcular. Revisa la consola.')
+    } finally {
+      setRecomputing(false)
     }
   }
 
@@ -586,7 +728,24 @@ export function DashboardPage() {
       const ad = detail?.analysis_data as AnalysisResult | undefined
       const date = new Date(s.created_at).toLocaleDateString('es-ES', { day: '2-digit', month: 'short' })
 
-      if (!ad) return { date, score: 0, coloresUser: 0, importantUser: 0, idsUser: 0, badFonts: 0, spacingUser: 0, reuseUser: 0 }
+      // El score sale SIEMPRE de la columna health_score (ligera y fiable),
+      // así el gráfico "Health Score vs HG5" se pinta aunque el detalle pesado
+      // no haya cargado.
+      const scoreUser = s.health_score ?? ad?.healthScore ?? 0
+
+      // Si el detalle no está disponible aún, devolvemos un punto con el score
+      // real (de columna) y el resto a 0, en lugar de omitir las series — así
+      // ninguna línea queda "vacía".
+      if (!ad) {
+        return {
+          date, cumplimiento: 0, coloresUser: 0,
+          importantUser: s.important_count ?? 0,
+          idsUser: s.id_count ?? 0,
+          badFonts: 0, spacingUser: 0,
+          reuseUser: +(((s.reuse_ratio ?? 0) * 100).toFixed(1)),
+          scoreUser,
+        }
+      }
 
       const badFonts = (ad.fontFamilies || []).filter(f => classifyFamily(f.normalized || f.value) === 'eliminate')
 
@@ -602,27 +761,27 @@ export function DashboardPage() {
       }
       check(ad.importantCount, hg5.importantCount, true)
       check(ad.idCount, hg5.idCount, true)
-      check(ad.colors.length, hg5.colors.length, true)
-      check(ad.duplicateSelectors.length, hg5.duplicateSelectors.length, true)
-      check(ad.duplicateDeclarations.length, hg5.duplicateDeclarations.length, true)
+      check(ad.colors?.length ?? 0, hg5.colors.length, true)
+      check(ad.duplicateSelectors?.length ?? 0, hg5.duplicateSelectors.length, true)
+      check(ad.duplicateDeclarations?.length ?? 0, hg5.duplicateDeclarations.length, true)
       check(ad.vendorPrefixCount, hg5.vendorPrefixCount, true)
       check(ad.reuseRatio, hg5.reuseRatio, false)
       check(ad.variableCount, hg5.variableCount, false)
       check(badFonts.length, 0, true)
-      check(ad.spacingValues.length, hg5.spacingValues.length, true)
+      check(ad.spacingValues?.length ?? 0, hg5.spacingValues.length, true)
 
       const compliance = total > 0 ? Math.round((good / total) * 100) : 0
 
       return {
         date,
         cumplimiento: compliance,
-        coloresUser: ad.colors.length,
+        coloresUser: ad.colors?.length ?? 0,
         importantUser: ad.importantCount,
         idsUser: ad.idCount,
         badFonts: badFonts.length,
-        spacingUser: ad.spacingValues.length,
+        spacingUser: ad.spacingValues?.length ?? 0,
         reuseUser: +(ad.reuseRatio * 100).toFixed(1),
-        scoreUser: ad.healthScore,
+        scoreUser,
       }
     })
   }, [chronologicalScans, allScanDetails, hg5Result])
@@ -803,10 +962,14 @@ export function DashboardPage() {
                     <ResponsiveContainer width="100%" height={280}>
                       <LineChart data={healthScoreChartData}>
                         <defs>
-                          <linearGradient id="healthLine" x1="0" y1="0" x2="1" y2="0">
-                            <stop offset="0%" stopColor="#9e2b25" />
-                            <stop offset="50%" stopColor="#a67c00" />
-                            <stop offset="100%" stopColor="#006c48" />
+                          {/* Gradiente VERTICAL: verde arriba (score alto) → rojo
+                              abajo (score bajo), para que el color de la línea
+                              refleje el valor real y no sea siempre verde. */}
+                          <linearGradient id="healthLine" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="0%" stopColor="#006c48" />
+                            <stop offset="40%" stopColor="#2a9d6e" />
+                            <stop offset="65%" stopColor="#a67c00" />
+                            <stop offset="100%" stopColor="#9e2b25" />
                           </linearGradient>
                         </defs>
                         <CartesianGrid strokeDasharray="3 3" stroke="#f0f2f1" />
@@ -816,13 +979,17 @@ export function DashboardPage() {
                           contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 4px 20px rgba(0,0,0,0.08)' }}
                           formatter={(value) => [`${value} / 100`, 'Health Score']}
                         />
+                        {/* Bandas de referencia (Excelente / Bueno / Regular) */}
+                        <ReferenceLine y={80} stroke="#006c48" strokeDasharray="4 4" strokeOpacity={0.25} label={{ value: 'Excelente', position: 'right', fontSize: 9, fill: '#006c48' }} />
+                        <ReferenceLine y={60} stroke="#a67c00" strokeDasharray="4 4" strokeOpacity={0.25} label={{ value: 'Bueno', position: 'right', fontSize: 9, fill: '#a67c00' }} />
+                        <ReferenceLine y={35} stroke="#9e2b25" strokeDasharray="4 4" strokeOpacity={0.25} label={{ value: 'Regular', position: 'right', fontSize: 9, fill: '#9e2b25' }} />
                         <Line
                           type="monotone"
                           dataKey="score"
-                          stroke="#006c48"
+                          stroke="url(#healthLine)"
                           strokeWidth={3}
-                          dot={{ fill: '#006c48', strokeWidth: 2, r: 5 }}
-                          activeDot={{ r: 7, fill: '#006c48', stroke: '#fff', strokeWidth: 2 }}
+                          dot={{ fill: '#1a2e23', strokeWidth: 0, r: 4 }}
+                          activeDot={{ r: 7, fill: '#1a2e23', stroke: '#fff', strokeWidth: 2 }}
                           name="Health Score"
                         />
                       </LineChart>
@@ -1643,7 +1810,24 @@ export function DashboardPage() {
                   {/* Scan history table */}
                   {scans.length > 0 && (
                     <Card id="sec-history" className="p-6" style={{ scrollMarginTop: '110px' }}>
-                      <SectionHeader title="Historial de escaneos" tooltip="Todos los escaneos realizados para este proyecto, del más reciente al más antiguo. Haz clic en el ojo para ver el detalle." />
+                      <div className="flex items-start justify-between gap-4 flex-wrap">
+                        <SectionHeader title="Historial de escaneos" tooltip="Todos los escaneos realizados para este proyecto, del más reciente al más antiguo. Haz clic en el ojo para ver el detalle." />
+                        <div className="flex items-center gap-2">
+                          {recomputeMsg && (
+                            <span className="text-[11px] text-[#52695b]">{recomputeMsg}</span>
+                          )}
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={handleRecompute}
+                            disabled={recomputing}
+                            title="Vuelve a analizar el CSS guardado de cada escaneo con el algoritmo actual y actualiza sus métricas y health score."
+                          >
+                            <RefreshCw size={14} className={recomputing ? 'animate-spin' : ''} />
+                            {recomputing ? 'Recalculando…' : 'Recalcular scores'}
+                          </Button>
+                        </div>
+                      </div>
                       <div className="overflow-x-auto">
                         <table className="w-full text-sm">
                           <thead>
@@ -1667,7 +1851,7 @@ export function DashboardPage() {
                           </thead>
                           <tbody>
                             {scans.map((scan) => {
-                              const scoreColor = scan.health_score >= 70 ? '#006c48' : scan.health_score >= 40 ? '#a67c00' : '#9e2b25'
+                              const scoreColor = getScoreBand(scan.health_score).color
                               return (
                                 <tr key={scan.id} className="border-b last:border-0" style={{ borderColor: 'rgba(11, 31, 22, 0.05)' }}>
                                   <td className="py-2.5 pr-3">
@@ -1912,7 +2096,7 @@ export function DashboardPage() {
                           return (
                             <>
                               <span>·</span>
-                              <span>Score: <span className="font-bold" style={{ color: ad.healthScore >= 70 ? '#006c48' : ad.healthScore >= 40 ? '#a67c00' : '#9e2b25' }}>{ad.healthScore}</span></span>
+                              <span>Score: <span className="font-bold" style={{ color: getScoreBand(ad.healthScore).color }}>{ad.healthScore}</span></span>
                               <span>·</span>
                               <span>{(ad.fileSize / 1024).toFixed(0)} KB</span>
                             </>

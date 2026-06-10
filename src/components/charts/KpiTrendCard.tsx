@@ -60,9 +60,12 @@ export function KpiTrendCard({
       const colorClass = isImprovement
         ? 'bg-[#e0f5ec] text-[#006c48]'
         : 'bg-[#fef2f1] text-[#9e2b25]'
+      // Si partíamos de 0 el porcentaje no tiene sentido (división por cero):
+      // mostramos el delta absoluto en su lugar.
+      const deltaLabel = first > 0 ? `${Math.abs(pct)}%` : `${diff > 0 ? '+' : ''}${diff}`
       trendBadge = (
         <Badge className={`${colorClass} text-[10px] px-1.5 py-0`}>
-          {arrow} {Math.abs(pct)}%
+          {arrow} {deltaLabel}
         </Badge>
       )
     }

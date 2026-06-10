@@ -13,14 +13,9 @@ import { Badge } from "@/components/ui/badge"
 import { InfoTooltip } from "@/components/ui/InfoTooltip"
 import { KpiTrendCard } from "@/components/charts/KpiTrendCard"
 import { C, CHART_COLORS, TT_STYLE } from "@/lib/colors"
+import { getScoreBand } from "@/lib/score-band"
+import { computeHealthScoreBreakdown } from "@/lib/analyzer/health-score"
 import type { LucideIcon } from "lucide-react"
-
-// ─── Helpers ──────────────────────────────────────────────────────
-function scoreColor(s: number) {
-  if (s >= 70) return { ring: C.green, text: "text-[#006c48]", label: "Bueno", bg: "bg-[#e0f5ec]" }
-  if (s >= 40) return { ring: C.yellow, text: "text-[#a67c00]", label: "Mejorable", bg: "bg-[#fef6e0]" }
-  return { ring: C.red, text: "text-[#9e2b25]", label: "Critico", bg: "bg-[#fef2f1]" }
-}
 
 function complexityConfig(r: string) {
   const map: Record<string, { label: string; color: string; bg: string; desc: string }> = {
@@ -73,7 +68,7 @@ function ScoreRing({ score }: { score: number }) {
   const r = 58
   const circ = 2 * Math.PI * r
   const offset = circ - (score / 100) * circ
-  const sc = scoreColor(score)
+  const color = getScoreBand(score).color
 
   return (
     <div className="relative" style={{ width: size, height: size }}>
@@ -81,14 +76,14 @@ function ScoreRing({ score }: { score: number }) {
         <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="#f0f2f1" strokeWidth={10} />
         <circle
           cx={size / 2} cy={size / 2} r={r} fill="none"
-          stroke={sc.ring} strokeWidth={10}
+          stroke={color} strokeWidth={10}
           strokeDasharray={circ} strokeDashoffset={offset}
           strokeLinecap="round"
           className="transition-all duration-700"
         />
       </svg>
       <div className="absolute inset-0 flex flex-col items-center justify-center">
-        <span className={`text-4xl font-bold ${sc.text}`}>{score}</span>
+        <span className="text-4xl font-bold" style={{ color }}>{score}</span>
         <span className="text-xs text-[#3d5a4a]">/ 100</span>
       </div>
     </div>
@@ -129,11 +124,21 @@ interface OverviewTabProps {
 }
 
 export function OverviewTab({ result, angularHistory, kpiHistory }: OverviewTabProps) {
-  const sc = scoreColor(result.healthScore)
+  const band = getScoreBand(result.healthScore)
   const cx = complexityConfig(result.complexityRating)
   const shorthandRatio = result.shorthandCount + result.longhandCount > 0
     ? (result.shorthandCount / (result.shorthandCount + result.longhandCount)) * 100
     : 0
+
+  // Desglose del health score: qué penaliza y cuánto. Permite explicar el
+  // número en vez de mostrarlo a secas.
+  const topPenalties = useMemo(() => {
+    const { penalties } = computeHealthScoreBreakdown(result)
+    return penalties
+      .filter(p => p.points >= 0.1)
+      .sort((a, b) => b.points - a.points)
+  }, [result])
+  const angularBreakdown = result.angularEncapsulationBreakdown ?? { host: 0, hostContext: 0, ngDeep: 0, deepCombinator: 0 }
 
   // ── Build ordered metrics: bad → warn → neutral → good ──
   type Metric = MiniMetricProps & { sortOrder: number }
@@ -163,10 +168,10 @@ export function OverviewTab({ result, angularHistory, kpiHistory }: OverviewTabP
     { label: "Prefijos vendor", value: result.vendorPrefixCount, icon: AlertTriangle, severity: sev(result.vendorPrefixCount, 30, 10, true), tooltip: "-webkit-, -moz-... Usa autoprefixer para automatizarlos.", sortOrder: 0 },
     { label: "Selector universal", value: result.universalSelectorCount, icon: Zap, severity: sev(result.universalSelectorCount, 15, 5, true), tooltip: "Uso de * — puede afectar rendimiento si se abusa.", sortOrder: 0 },
     { label: "Max especificidad", value: `${result.maxSpecificity[0]},${result.maxSpecificity[1]},${result.maxSpecificity[2]}`, icon: Zap, severity: result.maxSpecificity[0] > 0 ? "bad" : result.maxSpecificity[1] > 5 ? "warn" : "neutral", tooltip: "Especificidad mas alta encontrada (a,b,c). Si a > 0, hay IDs.", sortOrder: 0 },
-    { label: ":host", value: result.angularEncapsulationBreakdown.host, icon: AlertTriangle, severity: sev(result.angularEncapsulationBreakdown.host, 5, 1, true), tooltip: "Selector Angular :host. No deberia estar en un CSS global.", sortOrder: 0 },
-    { label: ":host-context", value: result.angularEncapsulationBreakdown.hostContext, icon: AlertTriangle, severity: sev(result.angularEncapsulationBreakdown.hostContext, 5, 1, true), tooltip: "Selector Angular :host-context. No deberia estar en un CSS global.", sortOrder: 0 },
-    { label: "::ng-deep", value: result.angularEncapsulationBreakdown.ngDeep, icon: AlertTriangle, severity: sev(result.angularEncapsulationBreakdown.ngDeep, 5, 1, true), tooltip: "Pseudo-elemento Angular ::ng-deep para piercing del shadow DOM. Deprecado.", sortOrder: 0 },
-    { label: "/deep/, >>>", value: result.angularEncapsulationBreakdown.deepCombinator, icon: AlertTriangle, severity: sev(result.angularEncapsulationBreakdown.deepCombinator, 5, 1, true), tooltip: "Combinadores legacy /deep/ y >>>. No estandar y deprecados.", sortOrder: 0 },
+    { label: ":host", value: angularBreakdown.host, icon: AlertTriangle, severity: sev(angularBreakdown.host, 5, 1, true), tooltip: "Selector Angular :host. No deberia estar en un CSS global.", sortOrder: 0 },
+    { label: ":host-context", value: angularBreakdown.hostContext, icon: AlertTriangle, severity: sev(angularBreakdown.hostContext, 5, 1, true), tooltip: "Selector Angular :host-context. No deberia estar en un CSS global.", sortOrder: 0 },
+    { label: "::ng-deep", value: angularBreakdown.ngDeep, icon: AlertTriangle, severity: sev(angularBreakdown.ngDeep, 5, 1, true), tooltip: "Pseudo-elemento Angular ::ng-deep para piercing del shadow DOM. Deprecado.", sortOrder: 0 },
+    { label: "/deep/, >>>", value: angularBreakdown.deepCombinator, icon: AlertTriangle, severity: sev(angularBreakdown.deepCombinator, 5, 1, true), tooltip: "Combinadores legacy /deep/ y >>>. No estandar y deprecados.", sortOrder: 0 },
 
     // Structure (neutral)
     { label: "Peso", value: `${(result.fileSize / 1024).toFixed(1)} KB`, icon: FileText, severity: "neutral", tooltip: "Tamano del archivo CSS.", sortOrder: 0 },
@@ -312,11 +317,11 @@ export function OverviewTab({ result, angularHistory, kpiHistory }: OverviewTabP
       <Card className="p-0 overflow-hidden">
         <div className="flex flex-col lg:flex-row">
           {/* Left: Score Ring */}
-          <div className={`flex flex-col items-center justify-center gap-3 p-8 ${sc.bg}`}>
+          <div className="flex flex-col items-center justify-center gap-3 p-8" style={{ backgroundColor: band.bg }}>
             <p className="text-xs font-semibold text-[#3d5a4a] uppercase tracking-wider">CSS Health Score</p>
             <ScoreRing score={result.healthScore} />
-            <Badge className={`${sc.bg} ${sc.text} text-sm px-4 py-1`}>
-              {sc.label}
+            <Badge className="text-sm px-4 py-1" style={{ backgroundColor: band.bg, color: band.color }}>
+              {band.label}
             </Badge>
           </div>
 
@@ -367,6 +372,51 @@ export function OverviewTab({ result, angularHistory, kpiHistory }: OverviewTabP
       </Card>
 
       {/* ══════════════════════════════════════════════════════════════
+           HEALTH SCORE BREAKDOWN — por qué este número
+         ══════════════════════════════════════════════════════════════ */}
+      <Card className="p-5">
+        <div className="flex items-center gap-1.5 mb-1">
+          <h4 className="text-sm font-semibold text-[#1a2e23]">Por qué este score</h4>
+          <InfoTooltip text="El score parte de 100 y resta puntos según la densidad de cada problema (problemas por declaración o por selector). Aquí ves cuánto resta cada factor; la barra muestra la severidad relativa a su peso máximo." />
+        </div>
+        {topPenalties.length === 0 ? (
+          <div className="flex items-center gap-2 mt-3 text-sm text-[#006c48]">
+            <span className="text-lg font-bold">{result.healthScore}</span>
+            <span>Sin penalizaciones relevantes — CSS muy limpio.</span>
+          </div>
+        ) : (
+          <>
+            <p className="text-[11px] text-[#3d5a4a] mb-3">
+              Partiendo de 100, estos factores restan{" "}
+              <span className="font-semibold text-[#9e2b25]">
+                −{topPenalties.reduce((acc, p) => acc + p.points, 0).toFixed(1)}
+              </span>{" "}
+              puntos en total:
+            </p>
+            <div className="space-y-1.5">
+              {topPenalties.map(p => (
+                <div key={p.key} className="flex items-center gap-3">
+                  <span className="text-[11px] text-[#1a2e23] w-48 shrink-0 truncate">{p.label}</span>
+                  <div className="flex-1 h-4 bg-[#f0f2f1] rounded-full overflow-hidden">
+                    <div
+                      className="h-full rounded-full transition-all"
+                      style={{
+                        width: `${Math.round(p.severity * 100)}%`,
+                        backgroundColor: p.severity >= 0.66 ? C.red : p.severity >= 0.33 ? C.yellow : C.green2,
+                      }}
+                    />
+                  </div>
+                  <span className="text-[11px] font-semibold text-[#9e2b25] w-14 text-right tabular-nums">
+                    −{p.points.toFixed(1)} pts
+                  </span>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+      </Card>
+
+      {/* ══════════════════════════════════════════════════════════════
            SEVERITY LEGEND
          ══════════════════════════════════════════════════════════════ */}
       <div className="flex items-center gap-4 text-[10px] text-[#3d5a4a]">
@@ -410,16 +460,16 @@ export function OverviewTab({ result, angularHistory, kpiHistory }: OverviewTabP
           {/* Breakdown chips */}
           <div className="flex flex-wrap gap-2 mb-4">
             <Badge variant="outline" className="text-xs">
-              :host <span className="ml-1 font-bold text-[#9e2b25]">{result.angularEncapsulationBreakdown.host}</span>
+              :host <span className="ml-1 font-bold text-[#9e2b25]">{angularBreakdown.host}</span>
             </Badge>
             <Badge variant="outline" className="text-xs">
-              :host-context <span className="ml-1 font-bold text-[#9e2b25]">{result.angularEncapsulationBreakdown.hostContext}</span>
+              :host-context <span className="ml-1 font-bold text-[#9e2b25]">{angularBreakdown.hostContext}</span>
             </Badge>
             <Badge variant="outline" className="text-xs">
-              ::ng-deep <span className="ml-1 font-bold text-[#9e2b25]">{result.angularEncapsulationBreakdown.ngDeep}</span>
+              ::ng-deep <span className="ml-1 font-bold text-[#9e2b25]">{angularBreakdown.ngDeep}</span>
             </Badge>
             <Badge variant="outline" className="text-xs">
-              /deep/, &gt;&gt;&gt; <span className="ml-1 font-bold text-[#9e2b25]">{result.angularEncapsulationBreakdown.deepCombinator}</span>
+              /deep/, &gt;&gt;&gt; <span className="ml-1 font-bold text-[#9e2b25]">{angularBreakdown.deepCombinator}</span>
             </Badge>
           </div>
 
@@ -439,7 +489,11 @@ export function OverviewTab({ result, angularHistory, kpiHistory }: OverviewTabP
                   const diff = last - first
                   const pct = first > 0 ? Math.round(((first - last) / first) * 100) : 0
                   if (diff < 0) return <Badge className="bg-[#e0f5ec] text-[#006c48] text-[10px]">▼ {pct}% reducido</Badge>
-                  if (diff > 0) return <Badge className="bg-[#fef2f1] text-[#9e2b25] text-[10px]">▲ {-pct}% incrementado</Badge>
+                  if (diff > 0) return (
+                    <Badge className="bg-[#fef2f1] text-[#9e2b25] text-[10px]">
+                      {first > 0 ? `▲ ${-pct}% incrementado` : `▲ +${diff} (nuevo)`}
+                    </Badge>
+                  )
                   return <Badge className="bg-[#f0f2f1] text-[#3d5a4a] text-[10px]">= sin cambio</Badge>
                 })()}
               </div>

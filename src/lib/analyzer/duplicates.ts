@@ -74,7 +74,10 @@ export function extractDuplicates(ast: CssNode): DuplicateResults {
         }
       }
 
-      if (node.type === "Declaration") {
+      // Las declaraciones dentro de @keyframes no son reglas reutilizables y
+      // su `currentSelector` quedaría mal atribuido (apuntaría al último
+      // selector real visto). Se excluyen del recuento de únicas/duplicadas.
+      if (node.type === "Declaration" && !insideKeyframes) {
         const key = `${node.property}: ${csstree.generate(node.value)}`
         uniqueDecls.add(key)
         const line = node.loc?.start?.line ?? 0
@@ -91,7 +94,9 @@ export function extractDuplicates(ast: CssNode): DuplicateResults {
       if (node.type === "Atrule") {
         const name = node.name.toLowerCase()
         if (name === "media" && node.prelude) {
-          const query = csstree.generate(node.prelude)
+          // Normalizamos el whitespace para que `(min-width: 768px)` y
+          // `(min-width:768px)` se consideren la misma query.
+          const query = csstree.generate(node.prelude).replace(/\s+/g, " ").trim()
           const line = node.loc?.start?.line ?? 0
           const existing = mediaMap.get(query)
           if (existing) {

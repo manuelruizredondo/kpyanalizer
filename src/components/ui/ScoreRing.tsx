@@ -1,14 +1,8 @@
-import { C } from "@/lib/colors"
+import { scoreColor } from "@/lib/score-band"
 
 interface ScoreRingProps {
   score: number
   size?: number
-}
-
-function scoreColor(s: number) {
-  if (s >= 80) return C.green
-  if (s >= 60) return C.yellow
-  return C.red
 }
 
 export function ScoreRing({ score, size = 120 }: ScoreRingProps) {

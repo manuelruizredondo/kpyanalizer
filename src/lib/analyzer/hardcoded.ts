@@ -42,12 +42,16 @@ const COLOR_PROPERTIES = new Set([
 ])
 
 function makeLocation(node: CssNode, selector: string, property: string): LocationReference {
+  // Si recibimos una Declaration, generamos solo su valor para no duplicar la
+  // propiedad en `rule` (antes producía "font-size: font-size: 14px").
+  const valueText =
+    node.type === "Declaration" && node.value ? csstree.generate(node.value) : csstree.generate(node)
   return {
     line: node.loc?.start?.line ?? 0,
     column: node.loc?.start?.column ?? 0,
     selector,
     property,
-    rule: `${property}: ${csstree.generate(node)}`,
+    rule: `${property}: ${valueText}`,
   }
 }
 
@@ -221,7 +225,7 @@ export function extractHardcoded(ast: CssNode): HardcodedResults {
 
         // colors from declarations
         if (COLOR_PROPERTIES.has(node.property)) {
-          extractColorsFromValue(node.value, node, rawColors)
+          extractColorsFromValue(node.value, node, currentSelector, rawColors)
         }
       }
     },
@@ -241,37 +245,37 @@ export function extractHardcoded(ast: CssNode): HardcodedResults {
 function extractColorsFromValue(
   valueNode: CssNode,
   declNode: CssNode,
+  selector: string,
   results: { value: string; normalized: string; location: LocationReference }[]
 ) {
+  const property = (declNode as { property?: string }).property ?? ""
+  // Construimos la localización a partir del valor (no de la declaración
+  // completa) para que `rule` salga como "color: #fff" y no "color: color: #fff".
+  const location: LocationReference = {
+    line: declNode.loc?.start?.line ?? 0,
+    column: declNode.loc?.start?.column ?? 0,
+    selector,
+    property,
+    rule: `${property}: ${csstree.generate(valueNode)}`,
+  }
+
   csstree.walk(valueNode, {
     enter(node: import("css-tree").CssNode) {
       if (node.type === "Hash") {
         const hex = `#${node.value}`
-        results.push({
-          value: hex,
-          normalized: normalizeColor(hex),
-          location: makeLocation(declNode, "", (declNode as { property?: string }).property ?? ""),
-        })
+        results.push({ value: hex, normalized: normalizeColor(hex), location })
       }
       if (node.type === "Function") {
         const name = node.name.toLowerCase()
         if (["rgb", "rgba", "hsl", "hsla", "oklch", "oklab", "lch", "lab"].includes(name)) {
           const val = csstree.generate(node)
-          results.push({
-            value: val,
-            normalized: val.toLowerCase().replace(/\s+/g, ""),
-            location: makeLocation(declNode, "", (declNode as { property?: string }).property ?? ""),
-          })
+          results.push({ value: val, normalized: val.toLowerCase().replace(/\s+/g, ""), location })
         }
       }
       if (node.type === "Identifier") {
         const name = node.name.toLowerCase()
         if (CSS_NAMED_COLORS.has(name)) {
-          results.push({
-            value: node.name,
-            normalized: name,
-            location: makeLocation(declNode, "", (declNode as { property?: string }).property ?? ""),
-          })
+          results.push({ value: node.name, normalized: name, location })
         }
       }
     },

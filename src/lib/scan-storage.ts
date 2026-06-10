@@ -1,5 +1,6 @@
 import { supabase } from '@/lib/supabase'
 import type { AnalysisResult } from '@/types/analysis'
+import { analyzeCss } from '@/lib/analyzer'
 
 export interface W3cValidationResult {
   valid: boolean
@@ -91,13 +92,12 @@ export async function saveScan(
   dsCoverage?: DsCoverageResult,
   userId?: string
 ): Promise<string> {
-  // Get current user if userId not provided
+  // Get current user if userId not provided. Usamos la sesión local
+  // (getSession) en vez de getUser(), que hace una llamada de red y puede
+  // colgarse dejando el guardado en "Guardando..." indefinidamente.
   let finalUserId = userId
   if (!finalUserId) {
-    const {
-      data: { user },
-    } = await supabase.auth.getUser()
-    if (!user) throw new Error('User not authenticated')
+    const user = await ensureAuth()
     finalUserId = user.id
   }
 
@@ -137,9 +137,105 @@ export async function saveScan(
     ds_coverage: dsCoverage || null,
   })
 
-  if (detailError) throw detailError
+  if (detailError) {
+    // Sin transacción entre las dos tablas: si el detalle falla, eliminamos la
+    // fila de scans para no dejar un escaneo huérfano (visible en el historial
+    // pero sin datos en las vistas de detalle).
+    await supabase.from('scans').delete().eq('id', scanId)
+    throw detailError
+  }
 
   return scanId
+}
+
+export interface RecomputeResult {
+  total: number
+  updated: number
+  skipped: number
+  errors: number
+}
+
+/**
+ * Re-analiza los escaneos guardados de un proyecto con el algoritmo actual y
+ * reescribe sus métricas derivadas (incluido el health_score) tanto en la tabla
+ * `scans` (columnas denormalizadas que leen las gráficas) como en
+ * `scan_details.analysis_data` (copia JSON que leen otras vistas). El CSS
+ * original se conserva en `analysis_data.raw`, así que no hace falta volver a
+ * subir nada.
+ *
+ * Es idempotente: re-ejecutarlo sobre escaneos ya actualizados produce el mismo
+ * resultado. Se omiten (skipped) los escaneos sin `raw` recuperable.
+ */
+export async function recomputeProjectScans(projectId: string): Promise<RecomputeResult> {
+  // 1. IDs de los escaneos del proyecto.
+  const { data: scanRows, error: scanErr } = await supabase
+    .from('scans')
+    .select('id')
+    .eq('project_id', projectId)
+  if (scanErr) throw scanErr
+
+  const ids = (scanRows || []).map(r => r.id)
+  const result: RecomputeResult = { total: ids.length, updated: 0, skipped: 0, errors: 0 }
+  if (ids.length === 0) return result
+
+  // 2. Detalles con el CSS original, UNO A UNO: cada analysis_data pesa varios
+  // MB y pedirlos todos en una query supera el statement_timeout (8s) del rol
+  // authenticated — la query fallaría entera.
+  for (const scanId of ids) {
+    const { data: row, error: detErr } = await supabase
+      .from('scan_details')
+      .select('scan_id, analysis_data')
+      .eq('scan_id', scanId)
+      .single()
+    if (detErr || !row) {
+      console.error('recomputeProjectScans: no se pudo leer el detalle de', scanId, detErr)
+      result.errors++
+      continue
+    }
+
+    const raw = (row.analysis_data as AnalysisResult | undefined)?.raw
+    if (typeof raw !== 'string' || raw.trim() === '') {
+      result.skipped++
+      continue
+    }
+
+    try {
+      const fresh = analyzeCss(raw)
+
+      // Conservamos w3c/ds (no se tocan) y reescribimos analysis_data completo.
+      const { error: updDetailErr } = await supabase
+        .from('scan_details')
+        .update({ analysis_data: fresh })
+        .eq('scan_id', row.scan_id)
+      if (updDetailErr) throw updDetailErr
+
+      const { error: updScanErr } = await supabase
+        .from('scans')
+        .update({
+          file_size: fresh.fileSize,
+          line_count: fresh.lineCount,
+          class_count: fresh.classCount,
+          id_count: fresh.idCount,
+          important_count: fresh.importantCount,
+          variable_count: fresh.variableCount,
+          reuse_ratio: fresh.reuseRatio,
+          health_score: fresh.healthScore,
+          total_selectors: fresh.totalSelectors,
+          total_declarations: fresh.totalDeclarations,
+          unique_declarations: fresh.uniqueDeclarations,
+          angular_encapsulation_count: fresh.angularEncapsulationCount,
+        })
+        .eq('id', row.scan_id)
+      if (updScanErr) throw updScanErr
+
+      result.updated++
+    } catch (err) {
+      console.error('recomputeProjectScans: error en scan', row.scan_id, err)
+      result.errors++
+    }
+  }
+
+  return result
 }
 
 /**
