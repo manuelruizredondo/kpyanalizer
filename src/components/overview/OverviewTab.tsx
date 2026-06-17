@@ -14,6 +14,7 @@ import { InfoTooltip } from "@/components/ui/InfoTooltip"
 import { KpiTrendCard } from "@/components/charts/KpiTrendCard"
 import { C, CHART_COLORS, TT_STYLE } from "@/lib/colors"
 import { getScoreBand } from "@/lib/score-band"
+import { isApprovedWeight } from "@/lib/font-utils"
 import { computeHealthScoreBreakdown } from "@/lib/analyzer/health-score"
 import type { LucideIcon } from "lucide-react"
 
@@ -803,7 +804,7 @@ export function OverviewTab({ result, angularHistory, kpiHistory }: OverviewTabP
           <Card className="p-5">
             <div className="flex items-center gap-1.5 mb-1">
               <h4 className="text-sm font-semibold text-[#1a2e23]">Pesos Tipograficos</h4>
-              <InfoTooltip text="Distribucion de font-weight. Los pesos aprobados del DS son 100, 400, 600 y 700." />
+              <InfoTooltip text="Distribucion de font-weight. Los pesos aprobados del DS (HG5) son 100, 300, 400, 500, 600 y 700." />
             </div>
             <ResponsiveContainer width="100%" height={250}>
               <BarChart data={weightData}>
@@ -814,8 +815,7 @@ export function OverviewTab({ result, angularHistory, kpiHistory }: OverviewTabP
                 <Bar dataKey="value" radius={[4, 4, 0, 0]} name="Usos">
                   {weightData.map((w, i) => {
                     const n = parseInt(w.name) || 0
-                    const approved = [100, 400, 600, 700].includes(n)
-                    return <Cell key={i} fill={approved ? C.green : C.yellow} />
+                    return <Cell key={i} fill={isApprovedWeight(n) ? C.green : C.yellow} />
                   })}
                 </Bar>
               </BarChart>

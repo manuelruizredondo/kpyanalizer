@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import type { AnalysisResult } from '@/types/analysis'
 import { useAnalysis } from '@/hooks/useAnalysis'
-import { classifyFamily } from '@/lib/font-utils'
+import { classifyFamily, DS_APPROVED_WEIGHTS, nearestApprovedWeight } from '@/lib/font-utils'
 import { getScoreBand } from '@/lib/score-band'
 import { Card } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -59,8 +59,6 @@ const PRIORITY_CONFIG: Record<Priority, { label: string; color: string; bg: stri
   low:      { label: 'Bajo',    color: '#006c48', bg: 'bg-[#e0f5ec]', border: 'border-[#006c48]/20', icon: <CheckCircle size={16} className="text-[#006c48]" /> },
 }
 
-// ─── DS constants ────────────────────────────────────────────────
-const DS_APPROVED_WEIGHTS = [100, 400, 600, 700]
 
 // ─── Generate Action Items ───────────────────────────────────────
 function generateActions(result: AnalysisResult): AutoActionItem[] {
@@ -169,15 +167,15 @@ function generateActions(result: AnalysisResult): AutoActionItem[] {
       priority: 'medium',
       category: 'Tipografia',
       title: 'Consolidar font-weights al DS',
-      description: `${badWeights.length} pesos tipograficos fuera de los aprobados (100, 400, 600, 700). Deben trasladarse al peso mas cercano.`,
+      description: `${badWeights.length} pesos tipograficos fuera de los aprobados (${DS_APPROVED_WEIGHTS.join(', ')}). Deben trasladarse al peso mas cercano.`,
       metric: `${badWeights.length} pesos`,
       impact: 'Reduce variantes de fuente cargadas y mantiene consistencia tipografica',
-      howToFix: 'Traslada cada peso al mas cercano aprobado: 200/300 → 100, 500 → 400, 800/900 → 700.',
+      howToFix: 'Traslada cada peso al mas cercano aprobado: 200 → 100, 800/900 → 700 (100, 300, 400, 500, 600 y 700 son validos en HG5).',
       icon: <Bold size={18} className="text-[#a67c00]" />,
       detailHeaders: ['Peso actual', 'Usos', 'Reemplazar por'],
       detailRows: [...badWeights].sort((a, b) => b.count - a.count).map(w => {
         const n = parseInt(w.normalized, 10)
-        const nearest = n <= 250 ? 100 : n <= 500 ? 400 : n <= 650 ? 600 : 700
+        const nearest = nearestApprovedWeight(n)
         return {
           cells: [w.normalized, w.count, String(nearest)],
           severity: 'warn' as const,

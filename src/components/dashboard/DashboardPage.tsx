@@ -11,7 +11,7 @@ import { InfoTooltip } from '@/components/ui/InfoTooltip'
 import { ScoreRing } from '@/components/ui/ScoreRing'
 import { getScoreBand } from '@/lib/score-band'
 import { KpiTrendCard } from '@/components/charts/KpiTrendCard'
-import { classifyFamily } from '@/lib/font-utils'
+import { classifyFamily, isApprovedWeight, nearestApprovedWeight } from '@/lib/font-utils'
 import type { Project, Scan, ScanDetail, ActionItem, ActionPriority } from '@/lib/scan-storage'
 import { getActionItems, createActionItem, updateActionItem, deleteActionItem, reorderActionItems, deleteScan, getScanDetail, recomputeProjectScans } from '@/lib/scan-storage'
 import { analyzeCss } from '@/lib/analyzer'
@@ -1336,12 +1336,10 @@ export function DashboardPage() {
                     const weights = ad?.fontWeights || []
                     if (weights.length === 0) return null
 
-                    const APPROVED_WEIGHTS = [100, 400, 600, 700]
                     const WEIGHT_NAMES: Record<number, string> = { 100: 'Thin', 200: 'Extra Light', 300: 'Light', 400: 'Normal', 500: 'Medium', 600: 'Semi Bold', 700: 'Bold', 800: 'Extra Bold', 900: 'Black' }
                     const sortedWeights = [...weights].sort((a, b) => (parseInt(a.normalized) || 0) - (parseInt(b.normalized) || 0))
-                    const approvedWeights = sortedWeights.filter(w => APPROVED_WEIGHTS.includes(parseInt(w.normalized) || 0))
-                    const unapproved = sortedWeights.filter(w => !APPROVED_WEIGHTS.includes(parseInt(w.normalized) || 0))
-                    const CONSOLIDATION: Record<number, number> = { 200: 100, 300: 100, 500: 400, 800: 700, 900: 700 }
+                    const approvedWeights = sortedWeights.filter(w => isApprovedWeight(parseInt(w.normalized) || 0))
+                    const unapproved = sortedWeights.filter(w => !isApprovedWeight(parseInt(w.normalized) || 0))
 
                     return (
                       <div id="sec-weights" className="grid grid-cols-1 lg:grid-cols-2 gap-6" style={{ scrollMarginTop: '110px' }}>
@@ -1350,12 +1348,12 @@ export function DashboardPage() {
                           <div className="flex items-center gap-2 mb-4">
                             <Type size={20} className="text-[#006c48]" />
                             <h3 className="text-lg font-semibold text-[#1a2e23]">Font-Weights y Equivalencias</h3>
-                            <InfoTooltip text="Distribución de font-weight. Los pesos aprobados del DS son 100, 400, 600 y 700." />
+                            <InfoTooltip text="Distribución de font-weight. Los pesos aprobados del DS (HG5) son 100, 300, 400, 500, 600 y 700." />
                           </div>
                           <div className="space-y-2">
                             {sortedWeights.map((w, i) => {
                               const n = parseInt(w.normalized) || 0
-                              const isApproved = APPROVED_WEIGHTS.includes(n)
+                              const isApproved = isApprovedWeight(n)
                               return (
                                 <div key={i} className="flex items-center gap-3 p-3 rounded-xl border" style={{ borderColor: isApproved ? 'rgba(0, 108, 72, 0.15)' : 'rgba(158, 43, 37, 0.15)' }}>
                                   <span className="text-[11px] font-bold px-2 py-1 rounded" style={{
@@ -1387,7 +1385,7 @@ export function DashboardPage() {
                               <div className="space-y-3">
                                 {unapproved.map((w, i) => {
                                   const n = parseInt(w.normalized) || 0
-                                  const target = CONSOLIDATION[n] || 400
+                                  const target = nearestApprovedWeight(n)
                                   return (
                                     <div key={i} className="p-4 rounded-xl border" style={{ borderColor: 'rgba(166, 124, 0, 0.15)' }}>
                                       <div className="flex items-center gap-2 mb-2">

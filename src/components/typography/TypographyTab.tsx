@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { InfoTooltip } from "@/components/ui/InfoTooltip"
 import { C } from "@/lib/colors"
-import { classifyFamily, getWeightLabel } from "@/lib/font-utils"
+import { classifyFamily, getWeightLabel, isApprovedWeight, nearestApprovedWeight } from "@/lib/font-utils"
 import type { FamilyTier } from "@/lib/font-utils"
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -548,26 +548,13 @@ export function TypographyTab({ result }: TypographyTabProps) {
            FONT WEIGHT UNIFICATION TABLE
          ══════════════════════════════════════════════════════════════ */}
       {(() => {
-        // DS weight consolidation rules:
-        // 100 (Thin) ← stays
-        // 200 (Extra Light) → 100
-        // 300 (Light) → 100
-        // 400 (Normal) ← stays (DS approved)
-        // 500 (Medium) → 400
-        // 600 (Semi Bold) ← stays
-        // 700 (Bold) ← stays (DS approved)
-        // 800 (Extra Bold) → 700
-        // 900 (Black) → 700
-        const DS_WEIGHT_TARGET: Record<string, string | null> = {
-          "100": null,       // OK — DS weight
-          "200": "100",      // Extra Light → Thin
-          "300": "100",      // Light → Thin
-          "400": null,       // OK — DS weight
-          "500": "400",      // Medium → Normal
-          "600": null,       // OK — keep
-          "700": null,       // OK — DS weight
-          "800": "700",      // Extra Bold → Bold
-          "900": "700",      // Black → Bold
+        // Pesos aprobados por HG5 (100, 300, 400, 500, 600, 700). Un peso fuera
+        // de ese set se consolida al aprobado más cercano; los aprobados se
+        // dejan tal cual (null = sin acción).
+        const dsTargetFor = (normalized: string): string | null => {
+          const n = parseInt(normalized, 10)
+          if (isNaN(n) || isApprovedWeight(n)) return null
+          return String(nearestApprovedWeight(n))
         }
 
         // Group weights by normalized value
@@ -591,17 +578,15 @@ export function TypographyTab({ result }: TypographyTabProps) {
 
         if (allGroups.length === 0) return null
 
-        const actionsCount = allGroups.filter(g => {
-          const target = DS_WEIGHT_TARGET[g.normalized]
-          return target !== undefined && target !== null
-        }).length + allGroups.filter(g => g.variants.length > 1).length
+        const actionsCount = allGroups.filter(g => dsTargetFor(g.normalized) !== null).length
+          + allGroups.filter(g => g.variants.length > 1).length
 
         return (
           <Card>
             <CardHeader className="pb-2">
               <div className="flex items-center gap-1.5">
                 <CardTitle className="text-sm">Equivalencias y Acciones de Font-Weight</CardTitle>
-                <InfoTooltip text="Tabla de equivalencias con las acciones del Design System. Los pesos aprobados son 100 (Thin), 400 (Normal), 600 (Semi Bold) y 700 (Bold). El resto se debe consolidar." />
+                <InfoTooltip text="Tabla de equivalencias con las acciones del Design System (HG5). Los pesos aprobados son 100 (Thin), 300 (Light), 400 (Normal), 500 (Medium), 600 (Semi Bold) y 700 (Bold). El resto se debe consolidar." />
               </div>
               {actionsCount > 0 && (
                 <p className="text-xs text-[#9e2b25]">
@@ -631,8 +616,8 @@ export function TypographyTab({ result }: TypographyTabProps) {
                   <tbody>
                     {allGroups.map((g) => {
                       const hasDupes = g.variants.length > 1
-                      const dsTarget = DS_WEIGHT_TARGET[g.normalized]
-                      const needsConsolidation = dsTarget !== undefined && dsTarget !== null
+                      const dsTarget = dsTargetFor(g.normalized)
+                      const needsConsolidation = dsTarget !== null
 
                       return (
                         <tr key={g.normalized} className={`border-t border-[#f0f2f1] ${needsConsolidation ? 'bg-[#fef2f1]/30' : hasDupes ? 'bg-[#fef6e0]/30' : ''}`}>
