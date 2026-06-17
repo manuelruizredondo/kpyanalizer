@@ -20,12 +20,22 @@ const root = resolve(__dirname, "..")
 
 function hg5Files(): string[] {
   const files: string[] = []
+  // Referencia HG5 servida en runtime (holygrail5 desde hg5.netlify.app).
   const output = resolve(root, "public/hg5/output.css")
   if (existsSync(output)) files.push(output)
   const themesDir = resolve(root, "public/hg5/themes")
   if (existsSync(themesDir)) {
     for (const f of readdirSync(themesDir)) {
       if (f.endsWith(".css")) files.push(resolve(themesDir, f))
+    }
+  }
+  // Referencia SOLO para generar huellas (no se sirve al cliente): snapshots de
+  // los paquetes HolyGrail que el usuario bundlea y que no están en netlify,
+  // p. ej. holygrail2 (utilidades responsive .only-desktop, .sm\:hidden, etc.).
+  const refDir = resolve(root, "hg5-reference")
+  if (existsSync(refDir)) {
+    for (const f of readdirSync(refDir)) {
+      if (f.endsWith(".css")) files.push(resolve(refDir, f))
     }
   }
   return files
