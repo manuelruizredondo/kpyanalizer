@@ -1,6 +1,7 @@
 import type { CssNode } from "css-tree"
 import { csstree } from "../css-parser"
 import { isHelperImportantRule } from "./helpers"
+import { isHg5Important } from "./hg5-importants"
 
 export interface BasicMetrics {
   classCount: number
@@ -60,6 +61,9 @@ export function extractBasicMetrics(ast: CssNode): BasicMetrics {
   // helper (.p-0\!, .mb-0\!, etc.) cuyos !important son intencionales y no
   // deben contabilizar como abuso de especificidad.
   let inHelperRule = false
+  // Selector actual, necesario para identificar (por coincidencia exacta) los
+  // !important que provienen de HolyGrail/HG5 y excluirlos del conteo.
+  let currentSelector = ""
   // Profundidad dentro de argumentos de pseudo-clases funcionales
   // (:not, :is, :where, :has). Sus `Selector` internos no son reglas reales
   // y no deben inflar totalSelectors (denominador de varias penalizaciones).
@@ -70,6 +74,7 @@ export function extractBasicMetrics(ast: CssNode): BasicMetrics {
     enter(node: import("css-tree").CssNode) {
       if (node.type === "Rule") {
         inHelperRule = isHelperImportantRule(node.prelude)
+        currentSelector = node.prelude ? csstree.generate(node.prelude) : ""
       }
       if (node.type === "PseudoClassSelector" && FUNCTIONAL_PSEUDOS.has(node.name.toLowerCase())) {
         pseudoArgDepth++
@@ -103,7 +108,11 @@ export function extractBasicMetrics(ast: CssNode): BasicMetrics {
           break
         case "Declaration":
           totalDeclarations++
-          if (node.important && !inHelperRule) {
+          if (
+            node.important &&
+            !inHelperRule &&
+            !isHg5Important(currentSelector, node.property, csstree.generate(node.value))
+          ) {
             importantCount++
           }
           if (node.property.startsWith("--")) {

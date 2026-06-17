@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "update-hg5": "mkdir -p public/hg5/themes && curl -sSf -o public/hg5/output.css https://hg5.netlify.app/output.css && curl -sSf -o public/hg5/themes/dutti.css https://hg5.netlify.app/themes/dutti.css && echo 'HG5 CSS updated'"
+    "update-hg5": "mkdir -p public/hg5/themes && curl -sSf -o public/hg5/output.css https://hg5.netlify.app/output.css && curl -sSf -o public/hg5/themes/dutti.css https://hg5.netlify.app/themes/dutti.css && npm run gen-hg5-importants && echo 'HG5 CSS updated'",
+    "gen-hg5-importants": "npx -y tsx scripts/gen-hg5-importants.ts"
   },
   "dependencies": {
     "@radix-ui/react-accordion": "^1.2.12",

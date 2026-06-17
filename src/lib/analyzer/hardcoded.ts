@@ -2,6 +2,7 @@ import type { CssNode } from "css-tree"
 import { csstree } from "../css-parser"
 import type { HardcodedValue, LocationReference } from "@/types/analysis"
 import { isHelperImportantRule } from "./helpers"
+import { isHg5Important } from "./hg5-importants"
 
 const CSS_NAMED_COLORS = new Set([
   "aliceblue","antiquewhite","aqua","aquamarine","azure","beige","bisque","black",
@@ -147,7 +148,14 @@ export function extractHardcoded(ast: CssNode): HardcodedResults {
       if (node.type === "Declaration") {
         inCustomProperty = node.property.startsWith("--")
 
-        if (node.important && !inHelperRule) {
+        // Se excluyen los !important de clases helper (.p-0\!) y los que vienen
+        // literalmente de HolyGrail/HG5 (coincidencia exacta), que no son
+        // responsabilidad del usuario.
+        if (
+          node.important &&
+          !inHelperRule &&
+          !isHg5Important(currentSelector, node.property, csstree.generate(node.value))
+        ) {
           importants.push({
             line: node.loc?.start?.line ?? 0,
             column: node.loc?.start?.column ?? 0,
