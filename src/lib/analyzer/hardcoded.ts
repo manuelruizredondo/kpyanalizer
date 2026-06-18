@@ -60,10 +60,18 @@ function normalizeColor(value: string): string {
   const v = value.toLowerCase().trim()
   if (v.startsWith("#")) {
     const hex = v.slice(1)
+    // #RGB → #RRGGBB
     if (hex.length === 3) {
       return `#${hex[0]}${hex[0]}${hex[1]}${hex[1]}${hex[2]}${hex[2]}`
     }
-    return `#${hex.padEnd(6, "0")}`
+    // #RGBA → #RRGGBBAA (expandir cada dígito; NO rellenar con ceros, que
+    // convertía #fffc en el falso amarillo #fffc00 y #0009 en #000900).
+    if (hex.length === 4) {
+      return `#${hex[0]}${hex[0]}${hex[1]}${hex[1]}${hex[2]}${hex[2]}${hex[3]}${hex[3]}`
+    }
+    // #RRGGBB y #RRGGBBAA ya son canónicos; cualquier otra longitud se deja
+    // tal cual (en minúsculas) en vez de fabricar un color inválido.
+    return `#${hex}`
   }
   return v
 }
