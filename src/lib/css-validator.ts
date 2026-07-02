@@ -91,8 +91,6 @@ export function validateCssLocal(css: string): W3cValidationResult {
   // ── Phase 2: Lexer validation (property + value checking) ──
   const lexer = csstree.lexer
   let currentSelector = ""
-  let charsetFound = false
-  void charsetFound // used below as write-only flag
   let firstRuleSeen = false
   let insideFontFace = false
   // Helpers utility (.p-0\!, .mb-0\!, etc.) tienen !important deliberado
@@ -141,7 +139,6 @@ export function validateCssLocal(css: string): W3cValidationResult {
               type: "charset-position",
             })
           }
-          charsetFound = true
           firstRuleSeen = true
         }
       }
@@ -265,12 +262,22 @@ function checkDuplicateProperties(
 
           if (seen.has(prop)) {
             const prev = seen.get(prop)!
-            // Only warn if the values are the same (true duplicate, not fallback)
             if (prev.value === value) {
+              // Duplicado redundante: el segundo es código muerto.
               warnings.push({
                 line,
                 message: `Propiedad "${prop}" duplicada con el mismo valor en la misma regla (linea ${prev.line})`,
                 context: `${selector} { ${prop}: ${value} }`,
+                type: "duplicate-property",
+              })
+            } else {
+              // Sobrescritura: misma propiedad con valor distinto en la misma
+              // regla. El segundo valor gana; suele ser un error (salvo
+              // fallbacks intencionales tipo `display:-webkit-box; display:flex`).
+              warnings.push({
+                line,
+                message: `Propiedad "${prop}" sobrescrita en la misma regla (linea ${prev.line}): gana "${value}" sobre "${prev.value}"`,
+                context: `${selector} { ${prop}: ${prev.value} → ${value} }`,
                 type: "duplicate-property",
               })
             }

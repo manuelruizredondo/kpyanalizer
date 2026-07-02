@@ -34,10 +34,14 @@ function parseJsonTokens(content: string): DsTokenSet {
             tokens.spacing.push(val)
             tokens.varNames[val] = varName
             break
-          case "zIndex":
-            tokens.zIndex.push(Number(value))
-            tokens.varNames[val] = varName
+          case "zIndex": {
+            const z = Number(value)
+            if (Number.isFinite(z)) {
+              tokens.zIndex.push(z)
+              tokens.varNames[val] = varName
+            }
             break
+          }
         }
       }
     }
@@ -64,10 +68,14 @@ function parseCssVarTokens(content: string): DsTokenSet {
         tokens.spacing.push(value)
         tokens.varNames[value] = varName
         break
-      case "zIndex":
-        tokens.zIndex.push(Number(value))
-        tokens.varNames[value] = varName
+      case "zIndex": {
+        const z = Number(value)
+        if (Number.isFinite(z)) {
+          tokens.zIndex.push(z)
+          tokens.varNames[value] = varName
+        }
         break
+      }
     }
   }
 

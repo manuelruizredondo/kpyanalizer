@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from 'react'
 import type { User } from '@supabase/supabase-js'
-import { supabase } from '@/lib/supabase'
+import { supabase, SUPABASE_URL, SUPABASE_ANON_KEY } from '@/lib/supabase'
 
 export interface UserProfile {
   id: string
@@ -126,11 +126,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       console.log('[Auth] Fetching profile for', userId)
       const resp = await fetch(
-        `https://lqgdrkwabcjrnnthlrmi.supabase.co/rest/v1/profiles?select=id,email,full_name,role,avatar_url&id=eq.${userId}`,
+        `${SUPABASE_URL}/rest/v1/profiles?select=id,email,full_name,role,avatar_url&id=eq.${userId}`,
         {
           signal: controller.signal,
           headers: {
-            'apikey': 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxxZ2Rya3dhYmNqcm5udGhscm1pIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYzMzIzMTQsImV4cCI6MjA5MTkwODMxNH0.0qhUexm2vPc-wDnX-G7w5Gg82Y2_Jow_v-9kWqL29AQ',
+            'apikey': SUPABASE_ANON_KEY,
             'Authorization': `Bearer ${token}`,
             'Content-Type': 'application/json',
           }

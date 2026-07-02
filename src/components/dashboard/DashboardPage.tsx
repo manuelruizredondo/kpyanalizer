@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { useAuth } from '@/contexts/AuthContext'
-import { supabase } from '@/lib/supabase'
+import { supabase, SUPABASE_URL, SUPABASE_ANON_KEY } from '@/lib/supabase'
 import type { AnalysisResult } from '@/types/analysis'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -329,11 +329,11 @@ export function DashboardPage() {
       let projectsList: Project[]
       try {
         const restResp = await fetch(
-          'https://lqgdrkwabcjrnnthlrmi.supabase.co/rest/v1/projects?select=*&order=created_at.desc',
+          `${SUPABASE_URL}/rest/v1/projects?select=*&order=created_at.desc`,
           {
             signal: controller.signal,
             headers: {
-              'apikey': 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxxZ2Rya3dhYmNqcm5udGhscm1pIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYzMzIzMTQsImV4cCI6MjA5MTkwODMxNH0.0qhUexm2vPc-wDnX-G7w5Gg82Y2_Jow_v-9kWqL29AQ',
+              'apikey': SUPABASE_ANON_KEY,
               'Authorization': `Bearer ${session.access_token}`,
               'Content-Type': 'application/json',
               'Prefer': 'return=representation',
@@ -378,10 +378,10 @@ export function DashboardPage() {
     const { data: { session } } = await supabase.auth.getSession()
     const controller = new AbortController()
     const t = setTimeout(() => controller.abort(), timeoutMs)
-    const r = await fetch(`https://lqgdrkwabcjrnnthlrmi.supabase.co/rest/v1/${path}`, {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
       signal: controller.signal,
       headers: {
-        'apikey': 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxxZ2Rya3dhYmNqcm5udGhscm1pIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYzMzIzMTQsImV4cCI6MjA5MTkwODMxNH0.0qhUexm2vPc-wDnX-G7w5Gg82Y2_Jow_v-9kWqL29AQ',
+        'apikey': SUPABASE_ANON_KEY,
         'Authorization': `Bearer ${session?.access_token}`,
         'Content-Type': 'application/json',
       }

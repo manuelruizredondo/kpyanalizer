@@ -14,22 +14,6 @@ export interface DuplicateResults {
 // Selectors to exclude from duplicate detection (common structural selectors)
 const IGNORED_SELECTORS = new Set([':root', '*', 'html', 'body'])
 
-function calculateMaxNestingDepth(node: CssNode, depth: number = 0): number {
-  let maxDepth = depth
-
-  if ('children' in node && node.children) {
-    const children = node.children as { forEach: (cb: (child: CssNode) => void) => void }
-    children.forEach((child: CssNode) => {
-      if (child.type === "Rule" || child.type === "Atrule") {
-        const childDepth = calculateMaxNestingDepth(child, depth + 1)
-        maxDepth = Math.max(maxDepth, childDepth)
-      }
-    })
-  }
-
-  return maxDepth
-}
-
 export function extractDuplicates(ast: CssNode): DuplicateResults {
   const selectorMap = new Map<string, { line: number; column: number; selector: string }[]>()
   const declarationMap = new Map<string, { line: number; column: number; selector: string; property: string }[]>()
@@ -40,13 +24,16 @@ export function extractDuplicates(ast: CssNode): DuplicateResults {
   let currentSelector = ""
   let insideKeyframes = false
   let deepestNesting = 0
+  // Profundidad de anidamiento calculada en UNA pasada con enter/leave
+  // (antes se re-recorría el subárbol por cada nodo → O(n²) y colgaba con CSS
+  // grandes). Cuenta reglas y at-rules anidadas, igual que antes.
+  let currentDepth = 0
 
   csstree.walk(ast, {
     enter(node: import("css-tree").CssNode) {
-      // Track nesting depth for @media and @supports rules
-      if ((node.type === "Atrule" || node.type === "Rule") && 'children' in node && node.children) {
-        const depth = calculateMaxNestingDepth(node)
-        deepestNesting = Math.max(deepestNesting, depth)
+      if (node.type === "Rule" || node.type === "Atrule") {
+        currentDepth++
+        if (currentDepth > deepestNesting) deepestNesting = currentDepth
       }
 
       // Track when we enter a @keyframes block
@@ -115,6 +102,9 @@ export function extractDuplicates(ast: CssNode): DuplicateResults {
       }
     },
     leave(node: import("css-tree").CssNode) {
+      if (node.type === "Rule" || node.type === "Atrule") {
+        currentDepth--
+      }
       // Reset flag when leaving a @keyframes block
       if (node.type === "Atrule") {
         const name = node.name.toLowerCase()

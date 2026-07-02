@@ -110,8 +110,11 @@ function compareCategoryNumeric(
         count: hv.count,
       })
     } else {
-      const closest = dsValues.length > 0
-        ? dsValues.reduce((a, b) => Math.abs(b - num) < Math.abs(a - num) ? b : a)
+      // Solo candidatos finitos: un token DS no numérico (NaN) envenenaría el
+      // reduce y produciría closestDsValue/distance = NaN.
+      const finiteDs = dsValues.filter(Number.isFinite)
+      const closest = (Number.isFinite(num) && finiteDs.length > 0)
+        ? finiteDs.reduce((a, b) => Math.abs(b - num) < Math.abs(a - num) ? b : a)
         : null
       mismatches.push({
         value: hv.normalized,
@@ -133,31 +136,78 @@ function compareCategoryNumeric(
 
 function findClosest(value: string, candidates: string[], distanceFn: (a: string, b: string) => number): string | null {
   if (candidates.length === 0) return null
-  let best = candidates[0]
-  let bestDist = distanceFn(value, candidates[0])
-  for (let i = 1; i < candidates.length; i++) {
-    const d = distanceFn(value, candidates[i])
+  let best: string | null = null
+  let bestDist = Infinity
+  for (const candidate of candidates) {
+    const d = distanceFn(value, candidate)
     if (d < bestDist) {
       bestDist = d
-      best = candidates[i]
+      best = candidate
     }
   }
-  return best
+  // Si ningún candidato es comparable (todos Infinity), no hay "más cercano".
+  return bestDist === Infinity ? null : best
 }
 
-function hexToRgb(hex: string): [number, number, number] | null {
-  const clean = hex.replace("#", "")
-  if (clean.length !== 6) return null
-  const r = parseInt(clean.slice(0, 2), 16)
-  const g = parseInt(clean.slice(2, 4), 16)
-  const b = parseInt(clean.slice(4, 6), 16)
-  if (isNaN(r) || isNaN(g) || isNaN(b)) return null
-  return [r, g, b]
+function clampByte(n: number): number {
+  return Math.max(0, Math.min(255, Math.round(n)))
+}
+
+function hslToRgb(h: number, s: number, l: number): [number, number, number] {
+  s /= 100
+  l /= 100
+  const k = (n: number) => (n + h / 30) % 12
+  const a = s * Math.min(l, 1 - l)
+  const f = (n: number) => l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)))
+  return [clampByte(f(0) * 255), clampByte(f(8) * 255), clampByte(f(4) * 255)]
+}
+
+/**
+ * Convierte un color CSS a [r,g,b]. Soporta #RGB, #RRGGBB, #RGBA y #RRGGBBAA
+ * (se ignora el alfa), rgb()/rgba() y hsl()/hsla(). Devuelve null si no se
+ * puede interpretar, en cuyo caso la distancia será Infinity.
+ */
+function colorToRgb(input: string): [number, number, number] | null {
+  const v = input.trim().toLowerCase()
+
+  if (v.startsWith("#")) {
+    let hex = v.slice(1)
+    if (hex.length === 3 || hex.length === 4) {
+      hex = hex.split("").map(c => c + c).join("")
+    }
+    if (hex.length !== 6 && hex.length !== 8) return null
+    const r = parseInt(hex.slice(0, 2), 16)
+    const g = parseInt(hex.slice(2, 4), 16)
+    const b = parseInt(hex.slice(4, 6), 16)
+    if (isNaN(r) || isNaN(g) || isNaN(b)) return null
+    return [r, g, b]
+  }
+
+  const rgbMatch = v.match(/^rgba?\(([^)]+)\)$/)
+  if (rgbMatch) {
+    const parts = rgbMatch[1].split(/[,/\s]+/).filter(Boolean).slice(0, 3).map(p =>
+      p.endsWith("%") ? (parseFloat(p) / 100) * 255 : parseFloat(p)
+    )
+    if (parts.length < 3 || parts.some(isNaN)) return null
+    return [clampByte(parts[0]), clampByte(parts[1]), clampByte(parts[2])]
+  }
+
+  const hslMatch = v.match(/^hsla?\(([^)]+)\)$/)
+  if (hslMatch) {
+    const parts = hslMatch[1].split(/[,/\s]+/).filter(Boolean)
+    const h = parseFloat(parts[0])
+    const s = parseFloat(parts[1])
+    const l = parseFloat(parts[2])
+    if ([h, s, l].some(isNaN)) return null
+    return hslToRgb(((h % 360) + 360) % 360, s, l)
+  }
+
+  return null
 }
 
 function colorDistance(a: string, b: string): number {
-  const rgbA = hexToRgb(a)
-  const rgbB = hexToRgb(b)
+  const rgbA = colorToRgb(a)
+  const rgbB = colorToRgb(b)
   if (!rgbA || !rgbB) return Infinity
   return Math.sqrt(
     (rgbA[0] - rgbB[0]) ** 2 +

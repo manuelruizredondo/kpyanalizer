@@ -18,8 +18,11 @@ export function analyzeCss(css: string): AnalysisResult {
 
   const fileSize = new Blob([css]).size
   const lineCount = css.split("\n").length
+  // Ratio de REUTILIZACIÓN: proporción de declaraciones que son repeticiones.
+  // (Antes se calculaba unique/total = ratio de UNICIDAD, invertido respecto a
+  // su nombre y a todos los consumidores, que asumen "más alto = mejor reuso".)
   const reuseRatio = basic.totalDeclarations > 0
-    ? dupes.uniqueDeclarations / basic.totalDeclarations
+    ? 1 - dupes.uniqueDeclarations / basic.totalDeclarations
     : 0
 
   const partial = {
