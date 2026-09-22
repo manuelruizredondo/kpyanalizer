@@ -1,0 +1,32 @@
+name: Keep Supabase Alive
+
+# Supabase (plan Free) pausa el proyecto tras ~7 días SIN peticiones EXTERNAS.
+# Un pg_cron interno NO cuenta como actividad. Este workflow hace un ping HTTP
+# real a la REST API cada 3 días para reiniciar ese contador de inactividad.
+
+on:
+  schedule:
+    - cron: '0 6 */3 * *'   # cada 3 días a las 06:00 UTC
+  workflow_dispatch:          # permite lanzarlo a mano desde la pestaña Actions
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Supabase REST API
+        env:
+          SUPABASE_URL: https://lqgdrkwabcjrnnthlrmi.supabase.co
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          # Cualquier respuesta HTTP de Supabase (incluido un 401) ya cuenta como
+          # actividad externa. Solo fallamos si NO hubo conexión (código 000).
+          code=$(curl -s -o /dev/null -w '%{http_code}' \
+            "$SUPABASE_URL/rest/v1/scans?select=id&limit=1" \
+            -H "apikey: $SUPABASE_ANON_KEY" \
+            -H "Authorization: Bearer $SUPABASE_ANON_KEY")
+          echo "HTTP $code desde Supabase REST"
+          if [ "$code" = "000" ]; then
+            echo "::error::No se pudo contactar con Supabase (sin respuesta)"
+            exit 1
+          fi
+          echo "OK: proyecto activo (respuesta $code)"
