@@ -40,9 +40,13 @@ export async function fetchViaCorsProxy(
   signal?.addEventListener('abort', onAbort)
   const t = setTimeout(() => controller.abort(), timeoutMs)
   try {
+    // Sin cabeceras propias: la función `cors-proxy` desplegada solo admite
+    // `Content-Type` en su CORS, y enviar `apikey`/`Authorization` hace que el
+    // navegador bloquee el preflight. Cuando la función acepte esas cabeceras
+    // y valide al usuario, añadir aquí `headers: await edgeFunctionHeaders()`.
     const resp = await fetch(
       `${edgeFunctionUrl('cors-proxy')}?url=${encodeURIComponent(url.toString())}`,
-      { signal: controller.signal, headers: await edgeFunctionHeaders() },
+      { signal: controller.signal },
     )
     // Se lee el cuerpo aquí dentro para que el timeout cubra también la descarga.
     const body = await resp.arrayBuffer()
