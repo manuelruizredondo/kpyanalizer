@@ -40,14 +40,19 @@ export async function fetchViaCorsProxy(
   signal?.addEventListener('abort', onAbort)
   const t = setTimeout(() => controller.abort(), timeoutMs)
   try {
-    // Sin cabeceras propias: la función `cors-proxy` desplegada solo admite
-    // `Content-Type` en su CORS, y enviar `apikey`/`Authorization` hace que el
-    // navegador bloquee el preflight. Cuando la función acepte esas cabeceras
-    // y valide al usuario, añadir aquí `headers: await edgeFunctionHeaders()`.
-    const resp = await fetch(
-      `${edgeFunctionUrl('cors-proxy')}?url=${encodeURIComponent(url.toString())}`,
-      { signal: controller.signal },
-    )
+    const target = `${edgeFunctionUrl('cors-proxy')}?url=${encodeURIComponent(url.toString())}`
+    let resp: Response
+    try {
+      resp = await fetch(target, { signal: controller.signal, headers: await edgeFunctionHeaders() })
+    } catch (err) {
+      // Transición: la versión antigua de `cors-proxy` solo admite `Content-Type`
+      // en su CORS y el navegador bloquea el preflight (TypeError). Se reintenta
+      // sin cabeceras para que la app funcione con la función vieja y con la
+      // nueva (que exige el token). Quitar este reintento cuando la nueva esté
+      // desplegada.
+      if (!(err instanceof TypeError) || controller.signal.aborted) throw err
+      resp = await fetch(target, { signal: controller.signal })
+    }
     // Se lee el cuerpo aquí dentro para que el timeout cubra también la descarga.
     const body = await resp.arrayBuffer()
     return new Response(body, { status: resp.status, statusText: resp.statusText, headers: resp.headers })
