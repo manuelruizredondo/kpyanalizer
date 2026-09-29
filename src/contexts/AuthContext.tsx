@@ -1,6 +1,7 @@
-import React, { createContext, useContext, useEffect, useState } from 'react'
-import type { User } from '@supabase/supabase-js'
+import React, { createContext, useContext, useEffect, useRef, useState } from 'react'
+import type { Session, User } from '@supabase/supabase-js'
 import { supabase, SUPABASE_URL, SUPABASE_ANON_KEY } from '@/lib/supabase'
+import { LAST_CSS_STORAGE_KEY } from '@/lib/storage-keys'
 
 export interface UserProfile {
   id: string
@@ -20,87 +21,95 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined)
 
+// Perfil provisional a partir del JWT mientras llega el de la tabla profiles.
+// Ojo: user_metadata lo puede editar el propio usuario, así que el rol de aquí
+// es solo orientativo (la BD es la que manda vía RLS).
+function profileFromSession(session: Session): UserProfile {
+  const meta = session.user.user_metadata || {}
+  return {
+    id: session.user.id,
+    email: session.user.email || '',
+    full_name: meta.full_name || session.user.email?.split('@')[0] || '',
+    role: meta.role === 'super_admin' ? 'super_admin' : 'editor',
+  }
+}
+
+function clearLocalAuthState() {
+  try {
+    const storageKey = Object.keys(localStorage).find(k => k.startsWith('sb-') && k.endsWith('-auth-token'))
+    if (storageKey) localStorage.removeItem(storageKey)
+  } catch { /* ignore */ }
+}
+
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null)
   const [profile, setProfile] = useState<UserProfile | null>(null)
   const [loading, setLoading] = useState(true)
+  // Usuario vigente: descarta respuestas de perfil que lleguen tras un logout
+  // o un cambio de cuenta.
+  const currentUserIdRef = useRef<string | null>(null)
 
   useEffect(() => {
     let mounted = true
 
-    // Safety timeout - never stay loading more than 5s
+    // Red de seguridad: nunca quedarse en "Cargando..." para siempre.
     const timeout = setTimeout(() => {
       if (mounted) setLoading(false)
-    }, 5000)
+    }, 8000)
 
-    // Check for existing session - use getSession() (local) to avoid network hangs
-    const checkSession = async () => {
+    const fetchUserProfile = async (userId: string, accessToken: string) => {
       try {
-        // First get local session
-        let { data: { session }, error: sessionError } = await supabase.auth.getSession()
-
-        // Try to refresh the token to get updated user_metadata (non-blocking)
-        if (session) {
-          try {
-            const refreshResult = await Promise.race([
-              supabase.auth.refreshSession(),
-              new Promise<null>((resolve) => setTimeout(() => resolve(null), 4000)),
-            ])
-            if (refreshResult && 'data' in refreshResult && refreshResult.data?.session) {
-              session = refreshResult.data.session
-              console.log('[Auth] Token refreshed, metadata updated')
-            }
-          } catch {
-            console.warn('[Auth] Token refresh failed, using cached session')
+        const controller = new AbortController()
+        const t = setTimeout(() => controller.abort(), 6000)
+        try {
+          const resp = await fetch(
+            `${SUPABASE_URL}/rest/v1/profiles?select=id,email,full_name,role,avatar_url&id=eq.${userId}`,
+            {
+              signal: controller.signal,
+              headers: {
+                apikey: SUPABASE_ANON_KEY,
+                Authorization: `Bearer ${accessToken}`,
+                'Content-Type': 'application/json',
+              },
+            },
+          )
+          if (!resp.ok) throw new Error(`Profile fetch failed: ${resp.status}`)
+          const rows = (await resp.json()) as UserProfile[]
+          if (mounted && rows.length > 0 && currentUserIdRef.current === userId) {
+            setProfile(rows[0])
           }
-        }
-
-        if (sessionError || !session) {
-          if (mounted) {
-            setUser(null)
-            setProfile(null)
-          }
-        } else if (mounted) {
-          setUser(session.user)
-          // Set immediate fallback profile from JWT metadata (synced from profiles table)
-          const meta = session.user.user_metadata || {}
-          setProfile({
-            id: session.user.id,
-            email: session.user.email || '',
-            full_name: meta.full_name || session.user.email?.split('@')[0] || '',
-            role: (meta.role === 'super_admin' ? 'super_admin' : 'editor'),
-          })
-          console.log('[Auth] JWT fallback profile:', meta.full_name, meta.role)
-          // Then try to fetch full profile from DB (may fail silently)
-          fetchUserProfile(session.user.id, session.access_token)
+        } finally {
+          clearTimeout(t)
         }
       } catch (error) {
-        console.error('Error checking session:', error)
-      } finally {
-        if (mounted) setLoading(false)
+        // Se mantiene el perfil provisional del JWT.
+        console.warn('[Auth] Could not fetch full profile:', error)
       }
     }
 
-    checkSession()
-
-    // Listen to auth changes
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange(async (_event, session) => {
+    // INITIAL_SESSION llega con la sesión ya recuperada (y refrescada si había
+    // caducado). Si el refresh token fue revocado en otro sitio, llega null:
+    // así no se "resucita" una sesión muerta desde la caché local.
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       if (!mounted) return
-      if (session?.user) {
-        setUser(session.user)
-        const meta = session.user.user_metadata || {}
-        setProfile({
-          id: session.user.id,
-          email: session.user.email || '',
-          full_name: meta.full_name || session.user.email?.split('@')[0] || '',
-          role: (meta.role === 'super_admin' ? 'super_admin' : 'editor'),
-        })
-        fetchUserProfile(session.user.id, session.access_token)
-      } else {
+      if (!session?.user) {
+        currentUserIdRef.current = null
         setUser(null)
         setProfile(null)
+        setLoading(false)
+        return
+      }
+
+      const userChanged = currentUserIdRef.current !== session.user.id
+      currentUserIdRef.current = session.user.id
+      setUser(session.user)
+
+      // TOKEN_REFRESHED (cada hora) no debe pisar el perfil real de la BD con
+      // el provisional del JWT ni volver a pedirlo.
+      if (userChanged || event === 'USER_UPDATED') {
+        if (userChanged) setProfile(profileFromSession(session))
+        // Sin await: no se debe esperar a otras llamadas dentro del callback.
+        void fetchUserProfile(session.user.id, session.access_token)
       }
       setLoading(false)
     })
@@ -112,45 +121,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, [])
 
-  const fetchUserProfile = async (userId: string, accessToken?: string) => {
-    try {
-      let token = accessToken
-      if (!token) {
-        const { data: { session } } = await supabase.auth.getSession()
-        token = session?.access_token
-      }
-      if (!token) return
-
-      const controller = new AbortController()
-      const t = setTimeout(() => controller.abort(), 6000)
-
-      console.log('[Auth] Fetching profile for', userId)
-      const resp = await fetch(
-        `${SUPABASE_URL}/rest/v1/profiles?select=id,email,full_name,role,avatar_url&id=eq.${userId}`,
-        {
-          signal: controller.signal,
-          headers: {
-            'apikey': SUPABASE_ANON_KEY,
-            'Authorization': `Bearer ${token}`,
-            'Content-Type': 'application/json',
-          }
-        }
-      )
-      clearTimeout(t)
-
-      console.log('[Auth] Profile response:', resp.status)
-      if (!resp.ok) throw new Error(`Profile fetch failed: ${resp.status}`)
-      const rows = await resp.json()
-      console.log('[Auth] Profile data:', rows.length, 'rows')
-      if (rows.length > 0) {
-        setProfile(rows[0] as UserProfile)
-      }
-    } catch (error) {
-      // Don't null the profile — keep the fallback from JWT
-      console.warn('[Auth] Could not fetch full profile:', error)
-    }
-  }
-
   const signIn = async (email: string, password: string) => {
     const { error } = await supabase.auth.signInWithPassword({
       email,
@@ -160,23 +130,25 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }
 
   const signOut = async () => {
-    // Clear state immediately so the UI responds instantly
+    // La UI responde al instante; la revocación sigue en segundo plano.
+    currentUserIdRef.current = null
     setUser(null)
     setProfile(null)
-    // Clear localStorage manually in case signOut() hangs
+    // El último CSS pegado no debe verlo el siguiente usuario de esta pestaña.
+    try { sessionStorage.removeItem(LAST_CSS_STORAGE_KEY) } catch { /* ignore */ }
+
+    // Primero signOut() (necesita leer la sesión guardada para revocar el
+    // refresh token en el servidor); solo si falla o se cuelga se borra a mano.
+    // scope 'local': cierra esta sesión sin echar al usuario de otros equipos.
     try {
-      const storageKey = Object.keys(localStorage).find(k => k.startsWith('sb-') && k.endsWith('-auth-token'))
-      if (storageKey) localStorage.removeItem(storageKey)
-    } catch { /* ignore */ }
-    // Try to notify the server but don't block on it
-    try {
-      await Promise.race([
-        supabase.auth.signOut(),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 3000)),
+      const { error } = await Promise.race([
+        supabase.auth.signOut({ scope: 'local' }),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), 3000)),
       ])
+      if (error) throw error
     } catch {
-      // If signOut fails/times out, session is already cleared locally
-      console.warn('Server signOut timed out, session cleared locally')
+      console.warn('Server signOut failed or timed out, clearing session locally')
+      clearLocalAuthState()
     }
   }
 

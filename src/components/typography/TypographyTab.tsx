@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { InfoTooltip } from "@/components/ui/InfoTooltip"
 import { C } from "@/lib/colors"
-import { classifyFamily, getWeightLabel, isApprovedWeight, nearestApprovedWeight } from "@/lib/font-utils"
+import { classifyFamily, getWeightLabel, isApprovedWeight, nearestApprovedWeight, DS_APPROVED_WEIGHTS } from "@/lib/font-utils"
 import type { FamilyTier } from "@/lib/font-utils"
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -129,7 +129,13 @@ export function TypographyTab({ result }: TypographyTabProps) {
     }), [fontWeights])
 
   // ── Assessments ──
-  const tooManyWeights = fontWeights.length > 5
+  // HG5 aprueba DS_APPROVED_WEIGHTS (6 grosores): solo se avisa si hay pesos
+  // fuera de ese set o más grosores distintos de los que aprueba el DS.
+  const unapprovedWeights = fontWeights.filter(w => {
+    const n = parseInt(w.normalized, 10)
+    return !isNaN(n) && !isApprovedWeight(n)
+  })
+  const tooManyWeights = unapprovedWeights.length > 0 || fontWeights.length > DS_APPROVED_WEIGHTS.length
   const hasEliminable = classified.eliminate.length > 0
   const eliminatePercent = totalFamilyUsages > 0 ? (eliminateUsages / totalFamilyUsages * 100) : 0
 
@@ -217,7 +223,11 @@ export function TypographyTab({ result }: TypographyTabProps) {
           <div className="flex items-start gap-2">
             <AlertTriangle size={16} className="text-[#a67c00] shrink-0 mt-0.5" />
             <p className="text-xs text-[#a67c00]">
-              <strong>Demasiados font-weights ({fontWeights.length}).</strong> Se recomiendan 2-4 grosores para mantener jerarquia tipografica clara.
+              <strong>Demasiados font-weights ({fontWeights.length}).</strong>{" "}
+              {unapprovedWeights.length > 0
+                ? `${unapprovedWeights.length} fuera de los aprobados por el DS (${DS_APPROVED_WEIGHTS.join(", ")}): ${unapprovedWeights.map(w => w.normalized).join(", ")}.`
+                : `El DS aprueba ${DS_APPROVED_WEIGHTS.length} grosores (${DS_APPROVED_WEIGHTS.join(", ")}).`}{" "}
+              Menos grosores mantienen una jerarquia tipografica clara.
             </p>
           </div>
         </Card>
@@ -557,7 +567,10 @@ export function TypographyTab({ result }: TypographyTabProps) {
           return String(nearestApprovedWeight(n))
         }
 
-        // Group weights by normalized value
+        // Group weights by normalized value. El analizador ya agrupa por
+        // `normalized` y guarda las grafías distintas en `variants` ("bold" y
+        // "700"); los escaneos antiguos no lo traen → se usa `value` como única
+        // variante (sin poder detectar "Unificar").
         const groups = new Map<string, { normalized: string; variants: { value: string; count: number }[]; totalCount: number }>()
         for (const w of fontWeights) {
           const key = w.normalized
@@ -565,7 +578,12 @@ export function TypographyTab({ result }: TypographyTabProps) {
             groups.set(key, { normalized: key, variants: [], totalCount: 0 })
           }
           const g = groups.get(key)!
-          g.variants.push({ value: w.value, count: w.count })
+          const variants = w.variants && w.variants.length > 0 ? w.variants : [{ value: w.value, count: w.count }]
+          for (const v of variants) {
+            const existing = g.variants.find(x => x.value === v.value)
+            if (existing) existing.count += v.count
+            else g.variants.push({ value: v.value, count: v.count })
+          }
           g.totalCount += w.count
         }
 

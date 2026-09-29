@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useMemo, useState } from "react"
 import { FileDropZone } from "@/components/input/FileDropZone"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -30,11 +30,21 @@ export function DesignSystemTab({
 }: DesignSystemTabProps) {
   const [urlInput, setUrlInput] = useState("")
   const [showUrlInput, setShowUrlInput] = useState(false)
+  // Aviso de la zona de arrastre (p.ej. varios archivos soltados)
+  const [dropNotice, setDropNotice] = useState<string | null>(null)
 
   const handleLoadUrl = async () => {
     if (!urlInput.trim() || !onLoadFromUrl) return
+    // No se cierra el formulario: si la carga va bien, `tokens` deja de ser
+    // null y se muestra la tarjeta del framework; si falla, el usuario sigue
+    // viendo su URL junto al error para corregirla.
     await onLoadFromUrl(urlInput.trim())
+  }
+
+  const handleReset = () => {
     setShowUrlInput(false)
+    setDropNotice(null)
+    onReset?.()
   }
 
   return (
@@ -46,7 +56,7 @@ export function DesignSystemTab({
           <div className="space-y-3">
             {!showUrlInput ? (
               <>
-                <FileDropZone onFileContent={onLoadTokens} accept=".json,.css" className="min-h-[120px]">
+                <FileDropZone onFileContent={onLoadTokens} onNotice={setDropNotice} accept=".json,.css" className="min-h-[120px]">
                   <div className="flex flex-col items-center justify-center gap-2 p-6 text-muted-foreground">
                     <Upload className="h-8 w-8" />
                     <p className="text-sm font-medium">Carga tus tokens del Design System</p>
@@ -74,6 +84,7 @@ export function DesignSystemTab({
                     <Link size={16} className="text-muted-foreground shrink-0" />
                     <input
                       type="url"
+                      aria-label="URL del CSS o JSON de tokens del framework"
                       value={urlInput}
                       onChange={(e) => setUrlInput(e.target.value)}
                       placeholder="https://ejemplo.com/framework.css"
@@ -138,11 +149,12 @@ export function DesignSystemTab({
                   <Badge variant="secondary">Cargado</Badge>
                   {onReset && (
                     <button
-                      onClick={onReset}
+                      onClick={handleReset}
                       className="p-1 rounded-lg text-muted-foreground hover:bg-muted transition-colors"
                       title="Cambiar framework"
+                      aria-label="Cambiar framework"
                     >
-                      <X size={16} />
+                      <X size={16} aria-hidden="true" />
                     </button>
                   )}
                 </div>
@@ -150,6 +162,7 @@ export function DesignSystemTab({
             </CardContent>
           </Card>
         )}
+        {dropNotice && <p className="text-xs text-[#a67c00] mt-2" role="status">{dropNotice}</p>}
         {error && <p className="text-sm text-destructive mt-2">{error}</p>}
       </div>
 
@@ -192,7 +205,7 @@ export function DesignSystemTab({
                   Valores redundantes — ya existen en el framework
                 </h4>
                 <p className="text-xs text-muted-foreground mt-1">
-                  Estos valores ya estan definidos en HolyGrail5. Puedes eliminarlos de tu CSS y usar las clases/variables del framework.
+                  Estos valores ya estan definidos en {fileName ? <span className="font-mono">{fileName}</span> : "el framework cargado"}. Puedes eliminarlos de tu CSS y usar las clases/variables del framework.
                 </p>
               </div>
 
@@ -267,12 +280,29 @@ function CategoryCard({ icon: Icon, label, category }: {
   )
 }
 
+// Filas que se pintan de golpe en cada tabla; el resto bajo "Mostrar más"
+// (con CSS grandes hay miles de valores y la tabla bloqueaba el render).
+const ROW_PAGE = 200
+
+function ShowMoreRows({ shown, total, onMore }: { shown: number; total: number; onMore: () => void }) {
+  if (total <= shown) return null
+  return (
+    <div className="flex items-center justify-between gap-3 pt-2 text-[10px] text-[#3d5a4a]">
+      <span>Mostrando {shown.toLocaleString()} de {total.toLocaleString()}</span>
+      <Button size="sm" variant="outline" className="h-7 text-xs" onClick={onMore}>
+        Mostrar más
+      </Button>
+    </div>
+  )
+}
+
 function RedundantSection({ label, items, isColor = false }: {
   label: string
   items: DsRedundant[]
   isColor?: boolean
 }) {
-  const sorted = [...items].sort((a, b) => b.count - a.count)
+  const [limit, setLimit] = useState(ROW_PAGE)
+  const sorted = useMemo(() => [...items].sort((a, b) => b.count - a.count), [items])
 
   return (
     <Card className="border-[#fef2f1]">
@@ -289,7 +319,7 @@ function RedundantSection({ label, items, isColor = false }: {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {sorted.map((item, i) => (
+            {sorted.slice(0, limit).map((item, i) => (
               <TableRow key={i} className="bg-[#fef2f1]/30">
                 {isColor && (
                   <TableCell>
@@ -316,6 +346,7 @@ function RedundantSection({ label, items, isColor = false }: {
             ))}
           </TableBody>
         </Table>
+        <ShowMoreRows shown={Math.min(limit, sorted.length)} total={sorted.length} onMore={() => setLimit(l => l + ROW_PAGE)} />
       </CardContent>
     </Card>
   )
@@ -326,6 +357,7 @@ function MismatchSection({ label, mismatches, isColor = false }: {
   mismatches: DsCategoryResult["mismatches"]
   isColor?: boolean
 }) {
+  const [limit, setLimit] = useState(ROW_PAGE)
   return (
     <section>
       <h4 className="text-sm font-semibold mb-2">{label}</h4>
@@ -339,7 +371,7 @@ function MismatchSection({ label, mismatches, isColor = false }: {
           </TableRow>
         </TableHeader>
         <TableBody>
-          {mismatches.map((m, i) => (
+          {mismatches.slice(0, limit).map((m, i) => (
             <TableRow key={i}>
               {isColor && (
                 <TableCell>
@@ -373,6 +405,7 @@ function MismatchSection({ label, mismatches, isColor = false }: {
           ))}
         </TableBody>
       </Table>
+      <ShowMoreRows shown={Math.min(limit, mismatches.length)} total={mismatches.length} onMore={() => setLimit(l => l + ROW_PAGE)} />
     </section>
   )
 }

@@ -1,6 +1,6 @@
-import { useState, useEffect, useRef, useMemo } from 'react'
+import { useState, useEffect, useRef, useMemo, useId } from 'react'
 import { useAuth } from '@/contexts/AuthContext'
-import { supabase, SUPABASE_URL, SUPABASE_ANON_KEY } from '@/lib/supabase'
+import { supabase } from '@/lib/supabase'
 import type { AnalysisResult } from '@/types/analysis'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -9,11 +9,14 @@ import { ScanDetailModal } from './ScanDetailModal'
 import { ConfrontarTab } from './ConfrontarTab'
 import { InfoTooltip } from '@/components/ui/InfoTooltip'
 import { ScoreRing } from '@/components/ui/ScoreRing'
-import { getScoreBand } from '@/lib/score-band'
+import { getScoreBand, scoreColor } from '@/lib/score-band'
 import { KpiTrendCard } from '@/components/charts/KpiTrendCard'
 import { classifyFamily, isApprovedWeight, nearestApprovedWeight } from '@/lib/font-utils'
-import type { Project, Scan, ScanDetail, ActionItem, ActionPriority } from '@/lib/scan-storage'
-import { getActionItems, createActionItem, updateActionItem, deleteActionItem, reorderActionItems, deleteScan, getScanDetail, recomputeProjectScans } from '@/lib/scan-storage'
+import type { Project, Scan, ScanDetail, ScanMetricsRow, ActionItem, ActionPriority } from '@/lib/scan-storage'
+import {
+  getActionItems, createActionItem, updateActionItem, deleteActionItem, reorderActionItems,
+  deleteScan, getScanDetail, recomputeProjectScans, restFetch, getScanMetrics, isAbortError,
+} from '@/lib/scan-storage'
 import { analyzeCss } from '@/lib/analyzer'
 import {
   LineChart,
@@ -153,19 +156,22 @@ function CoverageBar({ label, value, color }: { label: string; value: number; co
 function ChartTitle({ title, tooltip, first, last, downIsGood = true }: {
   title: string; tooltip: string; first?: number; last?: number; downIsGood?: boolean
 }) {
-  const hasDelta = first !== undefined && last !== undefined && first !== 0
+  const hasDelta = first !== undefined && last !== undefined
   const diff = hasDelta ? last! - first! : 0
-  const pct = hasDelta ? Math.round((diff / first!) * 100) : 0
+  // Partiendo de 0 el porcentaje no tiene sentido (división por cero): en ese
+  // caso mostramos el delta absoluto, igual que KpiTrendCard.
+  const fromZero = hasDelta && first === 0
+  const pct = hasDelta && !fromZero ? Math.round((diff / first!) * 100) : 0
   const isGood = downIsGood ? diff <= 0 : diff >= 0
 
   return (
     <div className="flex items-center gap-2 mb-3">
       <h3 className="text-sm font-semibold text-[#1a2e23]">{title}</h3>
-      {hasDelta && pct !== 0 && (
+      {hasDelta && (fromZero ? diff !== 0 : pct !== 0) && (
         <span className={`inline-flex items-center gap-0.5 text-[11px] font-semibold px-1.5 py-0.5 rounded-full ${
           isGood ? 'bg-[#e0f5ec] text-[#006c48]' : 'bg-[#fef2f1] text-[#9e2b25]'
         }`}>
-          {pct > 0 ? '▲' : '▼'} {Math.abs(pct)}%
+          {diff > 0 ? '▲' : '▼'} {fromZero ? `${diff > 0 ? '+' : ''}${diff}` : `${Math.abs(pct)}%`}
         </span>
       )}
       {hasDelta && pct === 0 && diff === 0 && (
@@ -178,32 +184,46 @@ function ChartTitle({ title, tooltip, first, last, downIsGood = true }: {
   )
 }
 
-// ─── Vista ligera `scan_metrics` (solo contadores, sin arrays pesadas) ──
-interface ScanMetricsRow {
-  scan_id: string
-  health_score: number
-  important_count: number
-  id_count: number
-  variable_count: number
-  reuse_ratio: number
-  vendor_prefix_count: number
-  universal_count: number
-  pseudo_elements: number
-  pseudo_classes: number
-  angular_count: number
-  ang_host: number
-  ang_host_context: number
-  ang_ng_deep: number
-  ang_deep_combinator: number
-  colors_count: number
-  font_sizes_count: number
-  spacing_count: number
-  zindex_count: number
-  dup_selectors: number
-  dup_declarations: number
-  media_queries: number
-  keyframes_count: number
-  font_families: { value: string; normalized: string; count: number }[]
+// ─── Etiquetas de fecha únicas para el eje X ──────────────────────
+// Con solo "dd MMM", dos escaneos del mismo día comparten etiqueta y recharts
+// los confunde (tooltip y ticks). Si un día se repite añadimos la hora, y si
+// aun así coinciden (mismo minuto), el número de escaneo.
+function buildDateLabels(chronological: Scan[]): Map<string, string> {
+  const day = (s: Scan) => new Date(s.created_at).toLocaleDateString('es-ES', { day: '2-digit', month: 'short' })
+  const time = (s: Scan) => new Date(s.created_at).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })
+  const dayCount = new Map<string, number>()
+  for (const s of chronological) dayCount.set(day(s), (dayCount.get(day(s)) ?? 0) + 1)
+
+  const labels = new Map<string, string>()
+  const used = new Set<string>()
+  chronological.forEach((s, i) => {
+    let label = (dayCount.get(day(s)) ?? 0) > 1 ? `${day(s)} ${time(s)}` : day(s)
+    if (used.has(label)) label = `${label} (#${i + 1})`
+    used.add(label)
+    labels.set(s.id, label)
+  })
+  return labels
+}
+
+/** Mensaje legible de un error lanzado por la capa de datos. */
+function errorMessage(err: unknown, fallback: string): string {
+  return err instanceof Error && err.message ? err.message : fallback
+}
+
+// Máximo de detalles COMPLETOS (varios MB cada uno) retenidos en memoria.
+const MAX_FULL_DETAILS = 3
+
+/**
+ * Combina la fila del listado (con `creator` embebido) con el detalle pesado
+ * recién descargado.
+ */
+function mergeFullDetail(scan: Scan, detail: ScanDetail): ScanDetail {
+  return {
+    ...scan,
+    analysis_data: detail.analysis_data,
+    w3c_validation: detail.w3c_validation,
+    ds_coverage: detail.ds_coverage,
+  }
 }
 
 // Sintetiza un AnalysisResult mínimo a partir de los contadores de la vista
@@ -261,32 +281,52 @@ function synthAnalysisFromMetrics(m: ScanMetricsRow, scan: Scan): AnalysisResult
   } as unknown as AnalysisResult
 }
 
+// ─── Plan de Acción: acciones automáticas ─────────────────────────
+type AutoDetail = { cells: (string | number)[]; swatch?: string }
+type AutoItem = { title: string; value: string; severity: string; description: string; detailHeaders?: string[]; detailRows?: AutoDetail[] }
+
 // ─── Main Component ─────────────────────────────────────────────────
 export function DashboardPage() {
   const { signOut } = useAuth()
   const [projects, setProjects] = useState<Project[]>([])
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
   const [scans, setScans] = useState<Scan[]>([])
-  const [latestDetail, setLatestDetail] = useState<ScanDetail | null>(null)
   const [loading, setLoading] = useState(true)
   const [scansLoading, setScansLoading] = useState(false)
+  const [scansError, setScansError] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [selectedScanId, setSelectedScanId] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState('resumen')
+  // Detalles SINTETIZADOS desde `scan_metrics` (solo contadores): alimentan
+  // las gráficas de evolución. Sus arrays son placeholders sin datos reales.
   const [allScanDetails, setAllScanDetails] = useState<Map<string, ScanDetail>>(new Map())
+  const [metricsError, setMetricsError] = useState<string | null>(null)
+  // Detalles COMPLETOS (arrays reales) por escaneo: el último siempre, más los
+  // que pida el Plan de Acción. Nunca se mezclan con los sintetizados.
+  const [fullDetails, setFullDetails] = useState<Map<string, ScanDetail>>(new Map())
+  const [latestDetailLoading, setLatestDetailLoading] = useState(false)
+  const [latestDetailError, setLatestDetailError] = useState<string | null>(null)
   const [recomputing, setRecomputing] = useState(false)
   const [recomputeMsg, setRecomputeMsg] = useState<string | null>(null)
+  const [historyError, setHistoryError] = useState<string | null>(null)
 
   // ── Action items state ──
   const [actionItems, setActionItems] = useState<ActionItem[]>([])
   const [actionLoading, setActionLoading] = useState(false)
+  const [actionError, setActionError] = useState<string | null>(null)
+  const [reorderPending, setReorderPending] = useState(false)
+  const reorderPendingRef = useRef(false)
   const [showAddForm, setShowAddForm] = useState(false)
+  const [formError, setFormError] = useState<string | null>(null)
+  const [formSaving, setFormSaving] = useState(false)
   const [expandedAutoItems, setExpandedAutoItems] = useState<Set<number>>(new Set())
   const [planScanId, setPlanScanId] = useState<string | null>(null)
+  const [planDetailError, setPlanDetailError] = useState<{ id: string; message: string } | null>(null)
   const [editingItemId, setEditingItemId] = useState<string | null>(null)
   const [formTitle, setFormTitle] = useState('')
   const [formDescription, setFormDescription] = useState('')
   const [formPriority, setFormPriority] = useState<ActionPriority>('medium')
+  const formIds = useId()
 
   // ── HG5 Confrontar state ──
   const hg5FetchedRef = useRef(false)
@@ -294,14 +334,26 @@ export function DashboardPage() {
   const [hg5Loading, setHg5Loading] = useState(false)
   const [hg5Error, setHg5Error] = useState<string | null>(null)
 
+  // ── Cancelación por proyecto ──
+  // Cada cambio de proyecto crea un AbortController nuevo (y aborta el del
+  // anterior). Toda carga asíncrona captura el vigente y descarta su resultado
+  // si ya no lo es, para no pintar datos del proyecto que el usuario ha dejado.
+  const projectCtrlRef = useRef<AbortController | null>(null)
+  // Dentro de un mismo proyecto, una recarga posterior invalida a la anterior.
+  const scansSeqRef = useRef(0)
+  const actionSeqRef = useRef(0)
+
   // ── Safety timeout: never stay on "Cargando" forever ──
+  // Debe ser MAYOR que el timeout del fetch de proyectos (10s de restFetch):
+  // si salta antes, se ve un falso "Selecciona un proyecto" mientras la
+  // petición aún está en curso.
   useEffect(() => {
     const t = setTimeout(() => {
       if (loading) {
         console.warn('[Dashboard] Safety timeout reached – forcing loading=false')
         setLoading(false)
       }
-    }, 8000)
+    }, 15000)
     return () => clearTimeout(t)
   }, [loading])
 
@@ -321,159 +373,162 @@ export function DashboardPage() {
         setLoading(false)
         return
       }
-      console.log('[Dashboard] Session found for:', session.user.email)
 
-      console.log('[Dashboard] Fetching projects via REST...')
-      const controller = new AbortController()
-      const timeout = setTimeout(() => controller.abort(), 10000)
-      let projectsList: Project[]
-      try {
-        const restResp = await fetch(
-          `${SUPABASE_URL}/rest/v1/projects?select=*&order=created_at.desc`,
-          {
-            signal: controller.signal,
-            headers: {
-              'apikey': SUPABASE_ANON_KEY,
-              'Authorization': `Bearer ${session.access_token}`,
-              'Content-Type': 'application/json',
-              'Prefer': 'return=representation',
-            }
-          }
-        )
-        clearTimeout(timeout)
-        console.log('[Dashboard] REST response status:', restResp.status)
-        if (!restResp.ok) {
-          const errText = await restResp.text()
-          throw new Error(`Error ${restResp.status}: ${errText}`)
-        }
-        projectsList = await restResp.json()
-        console.log('[Dashboard] Got', projectsList.length, 'projects')
-      } catch (fetchErr) {
-        clearTimeout(timeout)
-        if (fetchErr instanceof DOMException && fetchErr.name === 'AbortError') {
-          throw new Error('La conexión con Supabase tardó demasiado. Verifica tu conexión a internet.')
-        }
-        throw fetchErr
-      }
+      const projectsList = await restFetch<Project[]>('projects?select=*&order=created_at.desc')
       setProjects(projectsList)
       if (projectsList.length > 0 && !selectedProjectId) {
         setSelectedProjectId(projectsList[0].id)
       }
     } catch (err) {
       console.error('Error loading projects:', err)
-      setError(err instanceof Error ? err.message : 'Error al cargar los proyectos.')
+      setError(errorMessage(err, 'Error al cargar los proyectos.'))
     } finally {
       setLoading(false)
     }
   }
 
-  // ── Load scans + latest detail ──
+  // ── Load scans + latest detail (y reset al cambiar de proyecto) ──
   useEffect(() => {
+    const ctrl = new AbortController()
+    projectCtrlRef.current = ctrl
+
+    // Nada del proyecto anterior debe sobrevivir al cambio.
+    setScans([])
+    setAllScanDetails(new Map())
+    setFullDetails(new Map())
+    setScansError(null)
+    setMetricsError(null)
+    setLatestDetailError(null)
+    setLatestDetailLoading(false)
+    setActionItems([])
+    setActionError(null)
+    setActionLoading(false)
+    setPlanScanId(null)
+    setPlanDetailError(null)
+    setExpandedAutoItems(new Set())
+    setSelectedScanId(null)
+    setRecomputeMsg(null)
+    setHistoryError(null)
+    setShowAddForm(false)
+    setEditingItemId(null)
+    setFormError(null)
+
     if (selectedProjectId) {
       loadScans(selectedProjectId)
     }
+    return () => ctrl.abort()
   }, [selectedProjectId])
 
-  const restFetch = async (path: string, timeoutMs = 10000) => {
-    const { data: { session } } = await supabase.auth.getSession()
-    const controller = new AbortController()
-    const t = setTimeout(() => controller.abort(), timeoutMs)
-    const r = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
-      signal: controller.signal,
-      headers: {
-        'apikey': SUPABASE_ANON_KEY,
-        'Authorization': `Bearer ${session?.access_token}`,
-        'Content-Type': 'application/json',
+  // Guarda un detalle completo en la caché, expulsando los más antiguos (salvo
+  // `keepId`, el último escaneo) para no retener decenas de MB.
+  const cacheFullDetail = (detail: ScanDetail, keepId: string | undefined) => {
+    setFullDetails(prev => {
+      const next = new Map(prev)
+      next.delete(detail.id)
+      next.set(detail.id, detail)
+      for (const id of next.keys()) {
+        if (next.size <= MAX_FULL_DETAILS) break
+        if (id !== keepId && id !== detail.id) next.delete(id)
       }
+      return next
     })
-    clearTimeout(t)
-    if (!r.ok) throw new Error(`REST ${r.status}`)
-    return r.json()
+  }
+
+  // Detalle completo del último escaneo (1 sola fila → bajo el timeout del
+  // servidor). Son ~6MB de JSON: getScanDetail da 30s de margen de DESCARGA.
+  const loadLatestDetail = async (scan: Scan, signal: AbortSignal, isStale: () => boolean) => {
+    setLatestDetailLoading(true)
+    setLatestDetailError(null)
+    try {
+      const detail = await getScanDetail(scan.id, signal)
+      if (isStale()) return
+      cacheFullDetail(mergeFullDetail(scan, detail), scan.id)
+    } catch (err) {
+      if (isStale()) return
+      console.warn('[Dashboard] Could not load latest full detail:', err)
+      setLatestDetailError(errorMessage(err, 'Error desconocido.'))
+    } finally {
+      if (!isStale()) setLatestDetailLoading(false)
+    }
+  }
+
+  const retryLatestDetail = () => {
+    const ctrl = projectCtrlRef.current
+    const latest = scans[0]
+    if (!ctrl || ctrl.signal.aborted || !latest || latestDetailLoading) return
+    const seq = scansSeqRef.current
+    loadLatestDetail(latest, ctrl.signal, () => ctrl.signal.aborted || seq !== scansSeqRef.current)
   }
 
   const loadScans = async (projectId: string) => {
-    try {
-      setScansLoading(true)
-      console.log('[Dashboard] Loading scans for project:', projectId)
+    const ctrl = projectCtrlRef.current
+    if (!ctrl || ctrl.signal.aborted) return
+    const { signal } = ctrl
+    const seq = ++scansSeqRef.current
+    // Obsoleta si se cambió de proyecto o si otra recarga la ha sustituido.
+    const isStale = () => signal.aborted || seq !== scansSeqRef.current
 
+    setScansLoading(true)
+    setScansError(null)
+    setMetricsError(null)
+    setLatestDetailError(null)
+    // Los detalles completos pueden haber cambiado (p. ej. tras recalcular).
+    setFullDetails(new Map())
+    try {
       // Embed creator profile so the history table can show who ran each scan.
       // The FK scans.created_by → profiles(id) lets PostgREST do the join.
-      const scansList: Scan[] = await restFetch(
-        `scans?select=*,creator:profiles!created_by(id,full_name,email)&project_id=eq.${projectId}&order=created_at.desc`
+      const scansList = await restFetch<Scan[]>(
+        `scans?select=*,creator:profiles!created_by(id,full_name,email)&project_id=eq.${projectId}&order=created_at.desc`,
+        { signal },
       )
-      console.log('[Dashboard] Got', scansList.length, 'scans')
+      if (isStale()) return
       setScans(scansList)
 
-      if (scansList.length > 0) {
-        const scanIds = scansList.map(s => s.id)
-        try {
-          // El analysis_data completo pesa varios MB por escaneo (arrays de
-          // localizaciones + distribución de especificidad). Traer los 11 de
-          // golpe supera el statement_timeout (8s) del rol authenticated.
-          //
-          // Para las gráficas de evolución solo necesitamos CONTADORES, así que
-          // los leemos de la vista ligera `scan_metrics` (una query, unos KB) y
-          // sintetizamos un analysis_data mínimo (arrays con solo .length) que
-          // los constructores de datos consumen sin cambios. El detalle PESADO
-          // (arrays reales) se trae solo para el ÚLTIMO escaneo, que es el que
-          // alimenta las vistas de detalle (Tipografía, hardcodeados, etc.).
-          const metricsRows: ScanMetricsRow[] = await restFetch(
-            `scan_metrics?select=*&scan_id=in.(${scanIds.join(',')})`
-          )
-          const metricsByScan = new Map(metricsRows.map(m => [m.scan_id, m]))
-
-          const detailMap = new Map<string, ScanDetail>()
-          for (const scan of scansList) {
-            const m = metricsByScan.get(scan.id)
-            if (!m) continue
-            detailMap.set(scan.id, {
-              ...scan,
-              analysis_data: synthAnalysisFromMetrics(m, scan),
-            } as ScanDetail)
-          }
-
-          // Detalle completo del último escaneo (1 sola fila → bajo el timeout
-          // del servidor). Son ~6MB de JSON: damos 30s de margen de DESCARGA
-          // (el timeout de 10s por defecto se queda corto en conexiones lentas).
-          const latestId = scansList[0].id
-          try {
-            const latestRows = await restFetch(
-              `scan_details?select=analysis_data,w3c_validation,ds_coverage&scan_id=eq.${latestId}&limit=1`,
-              30000
-            )
-            const ld = Array.isArray(latestRows) ? latestRows[0] : undefined
-            if (ld) {
-              const fullLatest: ScanDetail = {
-                ...scansList[0],
-                analysis_data: ld.analysis_data || {},
-                w3c_validation: ld.w3c_validation,
-                ds_coverage: ld.ds_coverage,
-              } as ScanDetail
-              detailMap.set(latestId, fullLatest)
-              setLatestDetail(fullLatest)
-            } else {
-              setLatestDetail(detailMap.get(latestId) || null)
-            }
-          } catch (latestErr) {
-            console.warn('[Dashboard] Could not load latest full detail:', latestErr)
-            setLatestDetail(detailMap.get(latestId) || null)
-          }
-
-          setAllScanDetails(detailMap)
-        } catch (detailErr) {
-          console.warn('[Dashboard] Could not load scan details:', detailErr)
-          setLatestDetail(null)
-          // No details to map
-        }
-      } else {
-        setLatestDetail(null)
+      if (scansList.length === 0) {
+        setAllScanDetails(new Map())
+        return
       }
+
+      // El analysis_data completo pesa varios MB por escaneo (arrays de
+      // localizaciones + distribución de especificidad). Traer los 11 de
+      // golpe supera el statement_timeout (8s) del rol authenticated.
+      //
+      // Para las gráficas de evolución solo necesitamos CONTADORES, así que
+      // los leemos de la vista ligera `scan_metrics` (una query, unos KB) y
+      // sintetizamos un analysis_data mínimo (arrays con solo .length) que
+      // los constructores de datos consumen sin cambios. El detalle PESADO
+      // (arrays reales) se trae aparte (fullDetails): el ÚLTIMO escaneo aquí,
+      // y el que se elija en el Plan de Acción bajo demanda.
+      try {
+        const metricsRows = await getScanMetrics(scansList.map(s => s.id), signal)
+        if (isStale()) return
+        const metricsByScan = new Map(metricsRows.map(m => [m.scan_id, m]))
+
+        const detailMap = new Map<string, ScanDetail>()
+        for (const scan of scansList) {
+          const m = metricsByScan.get(scan.id)
+          if (!m) continue
+          detailMap.set(scan.id, {
+            ...scan,
+            analysis_data: synthAnalysisFromMetrics(m, scan),
+          } as ScanDetail)
+        }
+        setAllScanDetails(detailMap)
+      } catch (metricsErr) {
+        if (isStale()) return
+        console.warn('[Dashboard] Could not load scan metrics:', metricsErr)
+        // Sin mapa anterior: podría ser de otro proyecto o estar desfasado.
+        setAllScanDetails(new Map())
+        setMetricsError(errorMessage(metricsErr, 'Error desconocido.'))
+      }
+
+      await loadLatestDetail(scansList[0], signal, isStale)
     } catch (err) {
+      if (isStale() || isAbortError(err)) return
       console.error('[Dashboard] Error loading scans:', err)
-      setScans([])
-      setLatestDetail(null)
+      setScansError(errorMessage(err, 'Error desconocido.'))
     } finally {
-      setScansLoading(false)
+      if (!isStale()) setScansLoading(false)
     }
   }
 
@@ -481,20 +536,44 @@ export function DashboardPage() {
   // (útil tras cambiar el cálculo del health score) y recarga la vista.
   const handleRecompute = async () => {
     if (!selectedProjectId || recomputing) return
+    const projectId = selectedProjectId
+    const ctrl = projectCtrlRef.current
     setRecomputing(true)
     setRecomputeMsg(null)
     try {
-      const res = await recomputeProjectScans(selectedProjectId)
-      await loadScans(selectedProjectId)
+      const res = await recomputeProjectScans(projectId)
+      // Si el usuario ha cambiado de proyecto mientras tanto, no recargamos ni
+      // mostramos el resultado sobre el proyecto nuevo.
+      if (!ctrl || ctrl.signal.aborted) return
+      await loadScans(projectId)
+      if (ctrl.signal.aborted) return
       const parts = [`${res.updated} actualizados`]
       if (res.skipped > 0) parts.push(`${res.skipped} omitidos`)
       if (res.errors > 0) parts.push(`${res.errors} con error`)
       setRecomputeMsg(`✓ ${parts.join(' · ')} de ${res.total}`)
     } catch (err) {
+      if (ctrl?.signal.aborted) return
       console.error('[Dashboard] Error recomputing scores:', err)
       setRecomputeMsg('✗ Error al recalcular. Revisa la consola.')
     } finally {
       setRecomputing(false)
+    }
+  }
+
+  const handleDeleteScan = async (scanId: string) => {
+    if (!confirm('¿Eliminar este escaneo?')) return
+    const projectId = selectedProjectId
+    const ctrl = projectCtrlRef.current
+    setHistoryError(null)
+    try {
+      await deleteScan(scanId)
+      if (!projectId || !ctrl || ctrl.signal.aborted) return
+      await loadScans(projectId)
+    } catch (err) {
+      if (ctrl?.signal.aborted) return
+      console.error('Error deleting scan:', err)
+      // deleteScan lanza un mensaje en castellano si RLS impide el borrado.
+      setHistoryError(errorMessage(err, 'No se pudo eliminar el escaneo.'))
     }
   }
 
@@ -544,14 +623,21 @@ export function DashboardPage() {
   }, [selectedProjectId, activeTab])
 
   const loadActionItems = async (projectId: string) => {
+    const ctrl = projectCtrlRef.current
+    if (!ctrl || ctrl.signal.aborted) return
+    const seq = ++actionSeqRef.current
+    const isStale = () => ctrl.signal.aborted || seq !== actionSeqRef.current
     try {
       setActionLoading(true)
       const items = await getActionItems(projectId)
+      if (isStale()) return
       setActionItems(items)
     } catch (err) {
+      if (isStale()) return
       console.error('[Dashboard] Error loading action items:', err)
+      setActionError(`No se pudieron cargar las acciones. ${errorMessage(err, '')}`.trim())
     } finally {
-      setActionLoading(false)
+      if (!isStale()) setActionLoading(false)
     }
   }
 
@@ -561,54 +647,98 @@ export function DashboardPage() {
     setFormPriority('medium')
     setShowAddForm(false)
     setEditingItemId(null)
+    setFormError(null)
   }
 
   const handleAddItem = async () => {
-    if (!formTitle.trim() || !selectedProjectId) return
+    if (!formTitle.trim() || !selectedProjectId || formSaving) return
+    const projectId = selectedProjectId
+    const ctrl = projectCtrlRef.current
+    setFormSaving(true)
+    setFormError(null)
     try {
-      await createActionItem(selectedProjectId, formTitle.trim(), formPriority, formDescription.trim())
+      await createActionItem(projectId, formTitle.trim(), formPriority, formDescription.trim())
+      if (ctrl?.signal.aborted) return
       resetForm()
-      await loadActionItems(selectedProjectId)
+      await loadActionItems(projectId)
     } catch (err) {
+      if (ctrl?.signal.aborted) return
       console.error('Error creating action item:', err)
+      // El modal sigue abierto con lo escrito, para poder reintentar.
+      setFormError(`No se pudo crear la acción. ${errorMessage(err, '')}`.trim())
+    } finally {
+      setFormSaving(false)
     }
   }
 
   const handleUpdateItem = async () => {
-    if (!editingItemId || !formTitle.trim()) return
+    if (!editingItemId || !formTitle.trim() || formSaving) return
+    const projectId = selectedProjectId
+    const ctrl = projectCtrlRef.current
+    setFormSaving(true)
+    setFormError(null)
     try {
       await updateActionItem(editingItemId, {
         title: formTitle.trim(),
         description: formDescription.trim(),
         priority: formPriority,
       })
+      if (ctrl?.signal.aborted) return
       resetForm()
-      if (selectedProjectId) await loadActionItems(selectedProjectId)
+      if (projectId) await loadActionItems(projectId)
     } catch (err) {
+      if (ctrl?.signal.aborted) return
       console.error('Error updating action item:', err)
+      setFormError(`No se pudieron guardar los cambios. ${errorMessage(err, '')}`.trim())
+    } finally {
+      setFormSaving(false)
     }
   }
 
   const handleDeleteItem = async (id: string) => {
+    const projectId = selectedProjectId
+    const ctrl = projectCtrlRef.current
+    setActionError(null)
     try {
       await deleteActionItem(id)
-      if (selectedProjectId) await loadActionItems(selectedProjectId)
+      if (ctrl?.signal.aborted) return
+      if (projectId) await loadActionItems(projectId)
     } catch (err) {
+      if (ctrl?.signal.aborted) return
       console.error('Error deleting action item:', err)
+      // deleteActionItem lanza un mensaje en castellano si RLS impide el borrado.
+      setActionError(errorMessage(err, 'No se pudo eliminar la acción.'))
     }
   }
 
   const handleMoveItem = async (index: number, direction: 'up' | 'down') => {
+    // Serializa los movimientos: con un reorden en curso se ignoran nuevos
+    // clics, para que dos movimientos rápidos no se intercalen en la BD.
+    if (reorderPendingRef.current) return
     const newItems = [...actionItems]
     const swapIdx = direction === 'up' ? index - 1 : index + 1
     if (swapIdx < 0 || swapIdx >= newItems.length) return
     ;[newItems[index], newItems[swapIdx]] = [newItems[swapIdx], newItems[index]]
+    const projectId = selectedProjectId
+    const ctrl = projectCtrlRef.current
+    reorderPendingRef.current = true
+    setReorderPending(true)
+    setActionError(null)
     setActionItems(newItems)
     try {
-      await reorderActionItems(newItems.map(i => i.id))
+      await reorderActionItems(newItems)
+      if (ctrl?.signal.aborted) return
+      // Sincroniza el sort_order local con lo guardado (0..n-1): el siguiente
+      // reorden lo compara para decidir qué filas actualizar.
+      setActionItems(newItems.map((item, i) => ({ ...item, sort_order: i })))
     } catch (err) {
+      if (ctrl?.signal.aborted) return
       console.error('Error reordering:', err)
-      if (selectedProjectId) await loadActionItems(selectedProjectId)
+      setActionError(`No se pudo guardar el nuevo orden. ${errorMessage(err, '')}`.trim())
+      if (projectId) await loadActionItems(projectId)
+    } finally {
+      reorderPendingRef.current = false
+      setReorderPending(false)
     }
   }
 
@@ -617,14 +747,152 @@ export function DashboardPage() {
     setFormTitle(item.title)
     setFormDescription(item.description)
     setFormPriority(item.priority)
+    setFormError(null)
     setShowAddForm(true)
   }
+
+  // Escape cierra el modal de añadir/editar.
+  useEffect(() => {
+    if (!showAddForm) return
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') resetForm()
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [showAddForm])
 
   // ── Derived data ──
   const selectedProject = projects.find((p) => p.id === selectedProjectId)
   const latestScan = scans.length > 0 ? scans[0] : null
   const previousScan = scans.length > 1 ? scans[1] : null
-  const chronologicalScans = [...scans].reverse()
+  // Solo el detalle COMPLETO cuenta como "último detalle": nunca el sintetizado.
+  const latestDetail = latestScan ? fullDetails.get(latestScan.id) ?? null : null
+  const chronologicalScans = useMemo(() => [...scans].reverse(), [scans])
+  const dateLabels = useMemo(() => buildDateLabels(chronologicalScans), [chronologicalScans])
+
+  // ── Plan de Acción: escaneo seleccionado ──
+  // Si el escaneo elegido ya no existe (borrado, otro proyecto) caemos al último.
+  const activePlanScanId = planScanId && scans.some(s => s.id === planScanId) ? planScanId : (latestScan?.id ?? null)
+  const activePlanScan = scans.find(s => s.id === activePlanScanId)
+  const isPlanLatest = activePlanScanId !== null && activePlanScanId === latestScan?.id
+  const planDetail = activePlanScanId ? fullDetails.get(activePlanScanId) : undefined
+  const planDetailErrorMsg = isPlanLatest
+    ? latestDetailError
+    : (planDetailError && planDetailError.id === activePlanScanId ? planDetailError.message : null)
+
+  // El Plan necesita las arrays REALES (ocurrencias, localizaciones). Para un
+  // escaneo que no es el último, las pedimos bajo demanda (el último ya lo
+  // carga loadScans).
+  useEffect(() => {
+    if (activeTab !== 'plan' || scansLoading || !activePlanScan || isPlanLatest) return
+    if (fullDetails.has(activePlanScan.id)) return
+    if (planDetailError?.id === activePlanScan.id) return // espera a "Reintentar"
+    const projectCtrl = projectCtrlRef.current
+    if (!projectCtrl || projectCtrl.signal.aborted) return
+
+    const controller = new AbortController()
+    const onProjectAbort = () => controller.abort()
+    projectCtrl.signal.addEventListener('abort', onProjectAbort)
+    const scan = activePlanScan
+    const keepId = latestScan?.id
+    getScanDetail(scan.id, controller.signal)
+      .then((detail) => {
+        if (!controller.signal.aborted) cacheFullDetail(mergeFullDetail(scan, detail), keepId)
+      })
+      .catch((err) => {
+        if (controller.signal.aborted || isAbortError(err)) return
+        console.warn('[Dashboard] Could not load plan scan detail:', err)
+        setPlanDetailError({ id: scan.id, message: errorMessage(err, 'Error desconocido.') })
+      })
+    return () => {
+      controller.abort()
+      projectCtrl.signal.removeEventListener('abort', onProjectAbort)
+    }
+  }, [activeTab, scansLoading, activePlanScan, isPlanLatest, fullDetails, planDetailError, latestScan])
+
+  // Sin detalle y sin error = cargando (el último vía loadScans/reintento, el
+  // resto vía el efecto de arriba).
+  const planDetailLoading = !planDetail && !planDetailErrorMsg
+
+  const retryPlanDetail = () => {
+    if (isPlanLatest) retryLatestDetail()
+    else setPlanDetailError(null)
+  }
+
+  // Auto-generated items from selected scan — with real data. Memoizado: las
+  // arrays pesan varios MB y reordenarlas en cada tecla del modal es caro.
+  const autoItems = useMemo<AutoItem[]>(() => {
+    const items: AutoItem[] = []
+    const ad = planDetail?.analysis_data as AnalysisResult | undefined
+    if (!ad) return items
+
+    // !important
+    if (ad.importantCount > 0) {
+      const imps = ad.importants || []
+      items.push({
+        severity: ad.importantCount > 50 ? 'critical' : ad.importantCount > 20 ? 'high' : 'medium',
+        title: 'Eliminar !important', value: `${ad.importantCount}`,
+        description: 'Reescribir selectores con mayor especificidad natural.',
+        detailHeaders: ['Propiedad', 'Selector', 'Línea'],
+        detailRows: imps.map(imp => ({ cells: [imp?.property ?? '', imp?.selector ?? '', imp?.line ?? '–'] })),
+      })
+    }
+
+    // ID selectors
+    if (ad.idCount > 0) {
+      const idSels = (ad.specificityDistribution || []).filter(s => (s?.specificity?.[0] ?? 0) > 0)
+      items.push({
+        severity: ad.idCount > 20 ? 'high' : 'medium',
+        title: 'Reemplazar selectores de ID', value: `${ad.idCount}`,
+        description: 'Cambiar #id por .clase.',
+        detailHeaders: ['Selector', 'Especificidad', 'Línea'],
+        detailRows: idSels.map(s => ({ cells: [s.selector, `(${(s.specificity || []).join(',')})`, s.line ?? '–'] })),
+      })
+    }
+
+    // Colors
+    if ((ad.colors?.length ?? 0) > 0) {
+      const sorted = [...ad.colors].sort((a, b) => (b?.count ?? 0) - (a?.count ?? 0))
+      items.push({
+        severity: ad.colors.length > 50 ? 'critical' : 'high',
+        title: 'Migrar colores a variables DS', value: `${ad.colors.length}`,
+        description: 'Sustituir hardcodeados por tokens.',
+        detailHeaders: ['Color', 'Usos', 'Línea'],
+        detailRows: sorted.map(c => ({ cells: [c.normalized, c.count, c.locations?.[0]?.line ?? '–'], swatch: c.normalized })),
+      })
+    }
+
+    // Bad font families
+    const badFam = (ad.fontFamilies || []).filter(f => classifyFamily(f.normalized || f.value) === 'eliminate')
+    if (badFam.length > 0) {
+      items.push({
+        severity: 'high',
+        title: 'Eliminar fuentes no autorizadas', value: `${badFam.length}`,
+        description: 'Reemplazar por Suisse.',
+        detailHeaders: ['Familia', 'Usos', 'Línea ejemplo'],
+        detailRows: [...badFam].sort((a, b) => b.count - a.count).map(f => ({ cells: [(f.normalized || f.value || '').replace(/['"]/g, ''), f.count, f.locations?.[0]?.line ?? '–'] })),
+      })
+    }
+
+    // Duplicate selectors
+    if ((ad.duplicateSelectors?.length ?? 0) > 0) {
+      items.push({
+        severity: 'medium',
+        title: 'Unificar selectores duplicados', value: `${ad.duplicateSelectors.length}`,
+        description: 'Fusionar reglas duplicadas.',
+        detailHeaders: ['Selector', 'Repeticiones', 'Líneas'],
+        detailRows: [...ad.duplicateSelectors].sort((a, b) => (b?.occurrences?.length ?? 0) - (a?.occurrences?.length ?? 0)).map(d => {
+          const occ = d?.occurrences ?? []
+          return { cells: [d?.key ?? '', occ.length, occ.slice(0, 5).map(o => o.line).join(', ') + (occ.length > 5 ? '…' : '')] }
+        }),
+      })
+    }
+
+    // Vendor prefixes
+    if (ad.vendorPrefixCount > 10) items.push({ severity: 'low', title: 'Automatizar vendor prefixes', value: `${ad.vendorPrefixCount}`, description: 'Configurar Autoprefixer.' })
+
+    return items
+  }, [planDetail])
 
   const getDelta = (current: number, previous: number | undefined) => {
     if (previous === undefined) return null
@@ -634,61 +902,91 @@ export function DashboardPage() {
   }
 
   // ── Chart data ──
-  const healthScoreChartData = chronologicalScans.map((s) => ({
-    date: new Date(s.created_at).toLocaleDateString('es-ES', { day: '2-digit', month: 'short' }),
-    score: s.health_score,
-  }))
+  const {
+    healthScoreChartData,
+    weightChartData,
+    selectorsChartData,
+    importantChartData,
+    reuseChartData,
+  } = useMemo(() => {
+    const date = (s: Scan) => dateLabels.get(s.id) ?? ''
+    return {
+      healthScoreChartData: chronologicalScans.map((s) => ({
+        date: date(s),
+        score: s.health_score,
+      })),
+      weightChartData: chronologicalScans.map((s) => ({
+        date: date(s),
+        peso: +(s.file_size / 1024).toFixed(1),
+        lineas: s.line_count,
+      })),
+      selectorsChartData: chronologicalScans.map((s) => ({
+        date: date(s),
+        declaraciones: s.total_declarations,
+        selectores: s.total_selectors,
+        unicas: s.unique_declarations,
+      })),
+      importantChartData: chronologicalScans.map((s) => ({
+        date: date(s),
+        important: s.important_count,
+        ids: s.id_count,
+      })),
+      reuseChartData: chronologicalScans.map((s) => ({
+        date: date(s),
+        ratio: +(s.reuse_ratio * 100).toFixed(1),
+      })),
+    }
+  }, [chronologicalScans, dateLabels])
 
-  const weightChartData = chronologicalScans.map((s) => ({
-    date: new Date(s.created_at).toLocaleDateString('es-ES', { day: '2-digit', month: 'short' }),
-    peso: +(s.file_size / 1024).toFixed(1),
-    lineas: s.line_count,
-  }))
-
-  const selectorsChartData = chronologicalScans.map((s) => ({
-    date: new Date(s.created_at).toLocaleDateString('es-ES', { day: '2-digit', month: 'short' }),
-    declaraciones: s.total_declarations,
-    selectores: s.total_selectors,
-    unicas: s.unique_declarations,
-  }))
-
-  const importantChartData = chronologicalScans.map((s) => ({
-    date: new Date(s.created_at).toLocaleDateString('es-ES', { day: '2-digit', month: 'short' }),
-    important: s.important_count,
-    ids: s.id_count,
-  }))
-
-  const reuseChartData = chronologicalScans.map((s) => ({
-    date: new Date(s.created_at).toLocaleDateString('es-ES', { day: '2-digit', month: 'short' }),
-    ratio: +(s.reuse_ratio * 100).toFixed(1),
-  }))
+  // Trazo de la línea de Health Score coloreado por banda (score-band.ts).
+  // El gradiente usa objectBoundingBox (el rectángulo de la PROPIA línea, que
+  // va del score máximo al mínimo de los datos), así que las paradas se
+  // calculan dentro de ese rango y no del 0–100 del eje. Con una línea plana
+  // la caja tiene altura 0 y el gradiente no pinta nada: color sólido.
+  const healthStroke = useMemo<{ solid?: string; stops?: { offset: number; color: string }[] }>(() => {
+    const scores = healthScoreChartData.map(d => d.score).filter(n => Number.isFinite(n))
+    if (scores.length === 0) return { solid: scoreColor(0) }
+    const max = Math.max(...scores)
+    const min = Math.min(...scores)
+    if (max === min) return { solid: scoreColor(max) }
+    const offset = (score: number) => ((max - score) / (max - min)) * 100
+    // Tramos entre umbrales, de arriba (max) a abajo (min); cada uno de un
+    // color constante, con cortes nítidos en 80 / 60 / 35.
+    const cuts = [max, ...[80, 60, 35].filter(t => t < max && t > min), min]
+    const stops: { offset: number; color: string }[] = []
+    for (let i = 0; i < cuts.length - 1; i++) {
+      const color = scoreColor((cuts[i] + cuts[i + 1]) / 2)
+      stops.push({ offset: offset(cuts[i]), color }, { offset: offset(cuts[i + 1]), color })
+    }
+    return { stops }
+  }, [healthScoreChartData])
 
   // Legacy reduction charts (need analysis_data from all scans)
   const hardcodedColorsChartData = useMemo(() => chronologicalScans.map((s) => {
     const detail = allScanDetails.get(s.id)
     const ad = detail?.analysis_data as AnalysisResult | undefined
     return {
-      date: new Date(s.created_at).toLocaleDateString('es-ES', { day: '2-digit', month: 'short' }),
+      date: dateLabels.get(s.id) ?? '',
       colores: ad?.colors?.length || 0,
     }
-  }), [chronologicalScans, allScanDetails])
+  }), [chronologicalScans, allScanDetails, dateLabels])
 
   const fontsToEliminateChartData = useMemo(() => chronologicalScans.map((s) => {
     const detail = allScanDetails.get(s.id)
     const ad = detail?.analysis_data as AnalysisResult | undefined
     const badFonts = (ad?.fontFamilies || []).filter(f => classifyFamily(f.normalized || f.value) === 'eliminate')
     return {
-      date: new Date(s.created_at).toLocaleDateString('es-ES', { day: '2-digit', month: 'short' }),
+      date: dateLabels.get(s.id) ?? '',
       fuentes: badFonts.reduce((sum, f) => sum + f.count, 0),
     }
-  }), [chronologicalScans, allScanDetails])
+  }), [chronologicalScans, allScanDetails, dateLabels])
 
   // ── KPI evolution: line trends per metric to drive down ──
   const kpiTrendData = useMemo(() => chronologicalScans.map((s) => {
     const detail = allScanDetails.get(s.id)
     const ad = detail?.analysis_data as AnalysisResult | undefined
     return {
-      date: new Date(s.created_at).toLocaleDateString('es-ES', { day: '2-digit', month: 'short' }),
+      date: dateLabels.get(s.id) ?? '',
       ids: ad?.idCount ?? s.id_count ?? 0,
       vendor: ad?.vendorPrefixCount ?? 0,
       universal: ad?.universalSelectorCount ?? 0,
@@ -699,7 +997,7 @@ export function DashboardPage() {
       mediaQueries: ad?.mediaQueries?.length ?? 0,
       keyframes: ad?.keyframes?.length ?? 0,
     }
-  }), [chronologicalScans, allScanDetails])
+  }), [chronologicalScans, allScanDetails, dateLabels])
 
   // ── Angular ViewEncapsulation evolution (:host, :host-context, ::ng-deep, /deep/, >>>) ──
   const angularEncapsulationChartData = useMemo(() => chronologicalScans.map((s) => {
@@ -709,14 +1007,14 @@ export function DashboardPage() {
     const fromColumn = (s as { angular_encapsulation_count?: number }).angular_encapsulation_count
     const fromDetail = ad?.angularEncapsulationCount
     return {
-      date: new Date(s.created_at).toLocaleDateString('es-ES', { day: '2-digit', month: 'short' }),
+      date: dateLabels.get(s.id) ?? '',
       angular: typeof fromColumn === 'number' ? fromColumn : (fromDetail ?? 0),
       host: ad?.angularEncapsulationBreakdown?.host ?? 0,
       hostContext: ad?.angularEncapsulationBreakdown?.hostContext ?? 0,
       ngDeep: ad?.angularEncapsulationBreakdown?.ngDeep ?? 0,
       deepCombinator: ad?.angularEncapsulationBreakdown?.deepCombinator ?? 0,
     }
-  }), [chronologicalScans, allScanDetails])
+  }), [chronologicalScans, allScanDetails, dateLabels])
 
   // ── HG5 Compliance evolution data ──
   const hg5EvolutionData = useMemo(() => {
@@ -726,7 +1024,7 @@ export function DashboardPage() {
     return chronologicalScans.map((s) => {
       const detail = allScanDetails.get(s.id)
       const ad = detail?.analysis_data as AnalysisResult | undefined
-      const date = new Date(s.created_at).toLocaleDateString('es-ES', { day: '2-digit', month: 'short' })
+      const date = dateLabels.get(s.id) ?? ''
 
       // El score sale SIEMPRE de la columna health_score (ligera y fiable),
       // así el gráfico "Health Score vs HG5" se pinta aunque el detalle pesado
@@ -784,10 +1082,7 @@ export function DashboardPage() {
         scoreUser,
       }
     })
-  }, [chronologicalScans, allScanDetails, hg5Result])
-
-
-
+  }, [chronologicalScans, allScanDetails, hg5Result, dateLabels])
 
   // ── Loading / Error states ──
   if (loading && projects.length === 0) {
@@ -824,6 +1119,26 @@ export function DashboardPage() {
     { id: 'resumen', label: 'Resumen' },
     { id: 'plan', label: 'Plan de Acción' },
   ]
+
+  // Aviso en lugar de las tarjetas que necesitan el detalle COMPLETO del
+  // último escaneo: nunca las pintamos con los placeholders sintetizados.
+  const latestDetailNotice = !latestDetail ? (
+    latestDetailError ? (
+      <Card className="p-6 flex flex-col items-center gap-3 text-center" role="alert">
+        <AlertTriangle size={24} className="text-[#a67c00]" />
+        <p className="text-sm font-semibold text-[#1a2e23]">No se pudo cargar el detalle completo del último escaneo</p>
+        <p className="text-xs text-[#3d5a4a] max-w-md">{latestDetailError}</p>
+        <Button variant="outline" size="sm" onClick={retryLatestDetail} disabled={latestDetailLoading}>
+          Reintentar
+        </Button>
+      </Card>
+    ) : (
+      <Card className="p-6 flex items-center justify-center gap-2">
+        <Loader2 size={16} className="animate-spin text-[#006c48]" />
+        <p className="text-sm text-[#3d5a4a]">Cargando el detalle del último escaneo...</p>
+      </Card>
+    )
+  ) : null
 
   // ── Render ──
   return (
@@ -894,6 +1209,15 @@ export function DashboardPage() {
             <Loader2 className="animate-spin text-[#006c48]" size={24} />
             <p className="text-[#3d5a4a]">Cargando escaneos...</p>
           </div>
+        ) : scansError && selectedProjectId ? (
+          <Card className="p-8 flex flex-col items-center gap-3 text-center" role="alert">
+            <AlertTriangle size={28} className="text-[#9e2b25]" />
+            <p className="text-sm font-semibold text-[#9e2b25]">No se pudieron cargar los escaneos de este proyecto.</p>
+            <p className="text-xs text-[#3d5a4a] max-w-md">{scansError}</p>
+            <Button variant="outline" size="sm" onClick={() => loadScans(selectedProjectId)}>
+              Reintentar
+            </Button>
+          </Card>
         ) : selectedProject ? (
           scans.length > 0 && latestScan ? (
             <div className="space-y-8">
@@ -945,6 +1269,18 @@ export function DashboardPage() {
 
                   {/* ── MAIN RESUMEN CONTENT ── */}
                   <div className="flex-1 min-w-0 space-y-8">
+                  {metricsError && (
+                    <Card className="p-4 flex items-center gap-3" role="alert" style={{ background: '#fef6e0' }}>
+                      <AlertTriangle size={16} className="text-[#a67c00] shrink-0" />
+                      <p className="text-xs text-[#a67c00] flex-1">
+                        No se pudieron cargar las métricas de evolución; algunas gráficas aparecerán vacías. {metricsError}
+                      </p>
+                      <Button variant="outline" size="sm" onClick={() => selectedProjectId && loadScans(selectedProjectId)}>
+                        Reintentar
+                      </Button>
+                    </Card>
+                  )}
+
                   {/* Hero: CSS Health Score */}
                   <Card id="sec-health" className="p-6" style={{ scrollMarginTop: '110px' }}>
                     <div className="flex items-center justify-between mb-2">
@@ -961,17 +1297,18 @@ export function DashboardPage() {
                     </div>
                     <ResponsiveContainer width="100%" height={280}>
                       <LineChart data={healthScoreChartData}>
-                        <defs>
-                          {/* Gradiente VERTICAL: verde arriba (score alto) → rojo
-                              abajo (score bajo), para que el color de la línea
-                              refleje el valor real y no sea siempre verde. */}
-                          <linearGradient id="healthLine" x1="0" y1="0" x2="0" y2="1">
-                            <stop offset="0%" stopColor="#006c48" />
-                            <stop offset="40%" stopColor="#2a9d6e" />
-                            <stop offset="65%" stopColor="#a67c00" />
-                            <stop offset="100%" stopColor="#9e2b25" />
-                          </linearGradient>
-                        </defs>
+                        {/* Gradiente VERTICAL por bandas de score (ver healthStroke):
+                            el color de la línea refleja el valor real y no es
+                            siempre verde. */}
+                        {healthStroke.stops && (
+                          <defs>
+                            <linearGradient id="healthLine" x1="0" y1="0" x2="0" y2="1">
+                              {healthStroke.stops.map((s, i) => (
+                                <stop key={i} offset={`${s.offset}%`} stopColor={s.color} />
+                              ))}
+                            </linearGradient>
+                          </defs>
+                        )}
                         <CartesianGrid strokeDasharray="3 3" stroke="#f0f2f1" />
                         <XAxis dataKey="date" tick={{ fontSize: 12 }} tickLine={false} axisLine={false} />
                         <YAxis domain={[0, 100]} tick={{ fontSize: 12 }} tickLine={false} axisLine={false} />
@@ -986,7 +1323,7 @@ export function DashboardPage() {
                         <Line
                           type="monotone"
                           dataKey="score"
-                          stroke="url(#healthLine)"
+                          stroke={healthStroke.stops ? 'url(#healthLine)' : healthStroke.solid}
                           strokeWidth={3}
                           dot={{ fill: '#1a2e23', strokeWidth: 0, r: 4 }}
                           activeDot={{ r: 7, fill: '#1a2e23', stroke: '#fff', strokeWidth: 2 }}
@@ -1015,7 +1352,16 @@ export function DashboardPage() {
 
                   {/* Typography + Validation + DS Coverage */}
                   {(() => {
-                    const ad = latestDetail?.analysis_data as AnalysisResult | undefined
+                    // Sin detalle completo: aviso (con reintento) en lugar de
+                    // tipografía / validación / DS / hardcodeados / font-weights.
+                    if (!latestDetail) {
+                      return (
+                        <div id="sec-typography" style={{ scrollMarginTop: '110px' }}>
+                          {latestDetailNotice}
+                        </div>
+                      )
+                    }
+                    const ad = latestDetail.analysis_data as AnalysisResult | undefined
                     const families = ad?.fontFamilies || []
                     const weights = ad?.fontWeights || []
                     const sizes = ad?.fontSizes || []
@@ -1202,15 +1548,25 @@ export function DashboardPage() {
                     if (!ad) return null
 
                     const topColors = [...(ad.colors || [])].sort((a, b) => b.count - a.count).slice(0, 15)
-                    const spacingPx = (ad.spacingValues || []).filter(sv => /px$/i.test(sv.normalized) || sv.normalized === '0' || /^\d+$/.test(sv.normalized))
-                    const spacingPct = (ad.spacingValues || []).filter(sv => /%|vw|vh/i.test(sv.normalized))
-                    const spacingOther = (ad.spacingValues || []).filter(sv => /rem|em/i.test(sv.normalized))
+                    // Tres cubos DISJUNTOS que suman el total: px, relativos al
+                    // viewport/contenedor, y todo lo demás (rem, em, calc(), …).
+                    const isPx = (v: string) => /px$/i.test(v) || v === '0' || /^\d+$/.test(v)
+                    const isPct = (v: string) => !isPx(v) && /%|vw|vh/i.test(v)
+                    const spacingPx = (ad.spacingValues || []).filter(sv => isPx(sv.normalized))
+                    const spacingPct = (ad.spacingValues || []).filter(sv => isPct(sv.normalized))
+                    const spacingOther = (ad.spacingValues || []).filter(sv => !isPx(sv.normalized) && !isPct(sv.normalized))
                     const spacingTotal = (ad.spacingValues || []).reduce((s, v) => s + v.count, 0)
                     const offGrid = spacingPx.filter(sv => { const n = parseFloat(sv.normalized); return !isNaN(n) && n !== 0 && n % 8 !== 0 })
                     const offGridCount = offGrid.reduce((s, v) => s + v.count, 0)
 
                     const zTotal = (ad.zIndexValues || []).reduce((s, v) => s + v.count, 0)
-                    const zLayers = new Set((ad.zIndexValues || []).map(z => { const n = parseInt(z.value, 10); return isNaN(n) ? -1 : Math.min(Math.floor(Math.abs(n) / 1000), 9) })).size
+                    // Valores no numéricos (auto, inherit…) no ocupan capa.
+                    const zLayers = new Set(
+                      (ad.zIndexValues || [])
+                        .map(z => parseInt(z.value, 10))
+                        .filter(n => !isNaN(n))
+                        .map(n => Math.min(Math.floor(Math.abs(n) / 1000), 9)),
+                    ).size
                     const zNegative = (ad.zIndexValues || []).filter(z => parseInt(z.value, 10) < 0)
                     const zOver9999 = (ad.zIndexValues || []).filter(z => parseInt(z.value, 10) > 9999)
                     const zOutOfScale = (ad.zIndexValues || []).filter(z => { const n = parseInt(z.value, 10); return !isNaN(n) && (n % 1000 !== 0 && n !== 0 && n !== 1 && n !== -1) })
@@ -1612,21 +1968,21 @@ export function DashboardPage() {
                           title="Pseudo-elementos"
                           tooltip="::before, ::after, ::placeholder, etc. (excluye ::ng-deep)."
                           color="#3d5a4a"
-                          goal={undefined}
+                          goal={null}
                           data={kpiTrendData.map(p => ({ date: p.date, value: p.pseudoElements }))}
                         />
                         <KpiTrendCard
                           title="Media queries"
                           tooltip="Breakpoints responsive. Demasiados distintos puede indicar falta de sistema."
                           color="#3d5a4a"
-                          goal={undefined}
+                          goal={null}
                           data={kpiTrendData.map(p => ({ date: p.date, value: p.mediaQueries }))}
                         />
                         <KpiTrendCard
                           title="Keyframes"
                           tooltip="Animaciones @keyframes definidas."
                           color="#3d5a4a"
-                          goal={undefined}
+                          goal={null}
                           data={kpiTrendData.map(p => ({ date: p.date, value: p.keyframes }))}
                         />
                       </div>
@@ -1651,13 +2007,7 @@ export function DashboardPage() {
                               <XAxis dataKey="date" tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
                               <YAxis tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
                               <Tooltip contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.08)' }} />
-                              <Line type="monotone" dataKey="colores" stroke="#9e2b25" strokeWidth={2} dot={{ r: 3, fill: '#9e2b25' }} name="Colores" fill="#9e2b25" />
-                              <defs>
-                                <linearGradient id="colorsFill" x1="0" y1="0" x2="0" y2="1">
-                                  <stop offset="5%" stopColor="#9e2b25" stopOpacity={0.15} />
-                                  <stop offset="95%" stopColor="#9e2b25" stopOpacity={0} />
-                                </linearGradient>
-                              </defs>
+                              <Line type="monotone" dataKey="colores" stroke="#9e2b25" strokeWidth={2} dot={{ r: 3, fill: '#9e2b25' }} name="Colores" />
                             </LineChart>
                           </ResponsiveContainer>
                         </Card>
@@ -1826,6 +2176,19 @@ export function DashboardPage() {
                           </Button>
                         </div>
                       </div>
+                      {historyError && (
+                        <div role="alert" className="flex items-start gap-2 p-2 mb-3 rounded-lg bg-[#fef2f1]">
+                          <XCircle size={14} className="text-[#9e2b25] shrink-0 mt-0.5" />
+                          <p className="text-xs text-[#9e2b25] flex-1">{historyError}</p>
+                          <button
+                            onClick={() => setHistoryError(null)}
+                            aria-label="Cerrar aviso"
+                            className="p-0.5 rounded hover:bg-[#fbe8e6]"
+                          >
+                            <X size={12} className="text-[#9e2b25]" />
+                          </button>
+                        </div>
+                      )}
                       <div className="overflow-x-auto">
                         <table className="w-full text-sm">
                           <thead>
@@ -1880,13 +2243,15 @@ export function DashboardPage() {
                                         onClick={() => setSelectedScanId(scan.id)}
                                         className="p-1.5 rounded-lg hover:bg-[#e5f2ec] transition-colors"
                                         title="Ver detalle"
+                                        aria-label={`Ver detalle de ${scan.label}`}
                                       >
                                         <Eye size={15} className="text-[#006c48]" />
                                       </button>
                                       <button
                                         onClick={async () => {
                                           try {
-                                            const cached = allScanDetails.get(scan.id)
+                                            // Solo los detalles completos llevan el CSS (`raw`).
+                                            const cached = fullDetails.get(scan.id)
                                             const ad = cached?.analysis_data as AnalysisResult | undefined
                                             let raw = typeof ad?.raw === 'string' ? ad.raw : ''
                                             if (!raw) {
@@ -1913,19 +2278,15 @@ export function DashboardPage() {
                                         }}
                                         className="p-1.5 rounded-lg hover:bg-[#e5f2ec] transition-colors"
                                         title="Descargar CSS original"
+                                        aria-label={`Descargar CSS original de ${scan.label}`}
                                       >
                                         <Download size={15} className="text-[#006c48]" />
                                       </button>
                                       <button
-                                        onClick={async () => {
-                                          if (!confirm('¿Eliminar este escaneo?')) return
-                                          try {
-                                            await deleteScan(scan.id)
-                                            if (selectedProjectId) await loadScans(selectedProjectId)
-                                          } catch (err) { console.error('Error deleting scan:', err) }
-                                        }}
+                                        onClick={() => handleDeleteScan(scan.id)}
                                         className="p-1.5 rounded-lg hover:bg-[#fbe8e6] transition-colors"
                                         title="Eliminar"
+                                        aria-label={`Eliminar ${scan.label}`}
                                       >
                                         <Trash2 size={15} className="text-[#9e2b25]" />
                                       </button>
@@ -1946,13 +2307,15 @@ export function DashboardPage() {
                       <h2 className="text-xl font-semibold text-[#1a2e23]">Confrontación contra HG5</h2>
                       <p className="text-sm text-[#3d5a4a] mt-1">Auditoría completa de cumplimiento con el framework HG5.</p>
                     </div>
-                    <ConfrontarTab
-                      hg5Result={hg5Result}
-                      userResult={latestDetail?.analysis_data as AnalysisResult | undefined}
-                      hg5Loading={hg5Loading}
-                      hg5Error={hg5Error}
-                      onRetry={() => { hg5FetchedRef.current = false; loadHg5() }}
-                    />
+                    {latestDetail ? (
+                      <ConfrontarTab
+                        hg5Result={hg5Result}
+                        userResult={latestDetail.analysis_data as AnalysisResult | undefined}
+                        hg5Loading={hg5Loading}
+                        hg5Error={hg5Error}
+                        onRetry={() => { hg5FetchedRef.current = false; loadHg5() }}
+                      />
+                    ) : latestDetailNotice}
                   </div>
                   </div>
                 </div>
@@ -1964,83 +2327,6 @@ export function DashboardPage() {
                 const sevBg: Record<string, string> = { critical: '#fbe8e6', high: '#fbf2d9', medium: '#f0f2f1', low: '#e5f2ec' }
                 const sevLabel: Record<string, string> = { critical: 'Crítico', high: 'Alto', medium: 'Medio', low: 'Bajo' }
 
-                // Determine which scan to show plan for
-                const activePlanScanId = planScanId || (scans.length > 0 ? scans[0].id : null)
-                const planDetail = activePlanScanId ? allScanDetails.get(activePlanScanId) : latestDetail
-                const activePlanScan = scans.find(s => s.id === activePlanScanId)
-
-                // Auto-generated items from selected scan — with real data
-                type AutoDetail = { cells: (string | number)[]; swatch?: string }
-                type AutoItem = { title: string; value: string; severity: string; description: string; detailHeaders?: string[]; detailRows?: AutoDetail[] }
-                const autoItems: AutoItem[] = []
-                if (planDetail?.analysis_data) {
-                  const ad = planDetail.analysis_data as AnalysisResult
-
-                  // !important
-                  if (ad.importantCount > 0) {
-                    const imps = ad.importants || []
-                    autoItems.push({
-                      severity: ad.importantCount > 50 ? 'critical' : ad.importantCount > 20 ? 'high' : 'medium',
-                      title: 'Eliminar !important', value: `${ad.importantCount}`,
-                      description: 'Reescribir selectores con mayor especificidad natural.',
-                      detailHeaders: ['Propiedad', 'Selector', 'Línea'],
-                      detailRows: imps.map(imp => ({ cells: [imp.property, imp.selector, imp.line] })),
-                    })
-                  }
-
-                  // ID selectors
-                  if (ad.idCount > 0) {
-                    const idSels = ad.specificityDistribution.filter(s => s.specificity[0] > 0)
-                    autoItems.push({
-                      severity: ad.idCount > 20 ? 'high' : 'medium',
-                      title: 'Reemplazar selectores de ID', value: `${ad.idCount}`,
-                      description: 'Cambiar #id por .clase.',
-                      detailHeaders: ['Selector', 'Especificidad', 'Línea'],
-                      detailRows: idSels.map(s => ({ cells: [s.selector, `(${s.specificity.join(',')})`, s.line] })),
-                    })
-                  }
-
-                  // Colors
-                  if (ad.colors?.length > 0) {
-                    const sorted = [...ad.colors].sort((a, b) => b.count - a.count)
-                    autoItems.push({
-                      severity: ad.colors.length > 50 ? 'critical' : 'high',
-                      title: 'Migrar colores a variables DS', value: `${ad.colors.length}`,
-                      description: 'Sustituir hardcodeados por tokens.',
-                      detailHeaders: ['Color', 'Usos', 'Línea'],
-                      detailRows: sorted.map(c => ({ cells: [c.normalized, c.count, c.locations[0]?.line ?? '–'], swatch: c.normalized })),
-                    })
-                  }
-
-                  // Bad font families
-                  const badFam = (ad.fontFamilies || []).filter(f => classifyFamily(f.normalized || f.value) === 'eliminate')
-                  if (badFam.length > 0) {
-                    autoItems.push({
-                      severity: 'high',
-                      title: 'Eliminar fuentes no autorizadas', value: `${badFam.length}`,
-                      description: 'Reemplazar por Suisse.',
-                      detailHeaders: ['Familia', 'Usos', 'Línea ejemplo'],
-                      detailRows: [...badFam].sort((a, b) => b.count - a.count).map(f => ({ cells: [f.normalized.replace(/['"]/g, ''), f.count, f.locations[0]?.line ?? '–'] })),
-                    })
-                  }
-
-                  // Duplicate selectors
-                  if (ad.duplicateSelectors?.length > 0) {
-                    autoItems.push({
-                      severity: 'medium',
-                      title: 'Unificar selectores duplicados', value: `${ad.duplicateSelectors.length}`,
-                      description: 'Fusionar reglas duplicadas.',
-                      detailHeaders: ['Selector', 'Repeticiones', 'Líneas'],
-                      detailRows: [...ad.duplicateSelectors].sort((a, b) => b.occurrences.length - a.occurrences.length).map(d => ({
-                        cells: [d.key, d.occurrences.length, d.occurrences.slice(0, 5).map(o => o.line).join(', ') + (d.occurrences.length > 5 ? '…' : '')]
-                      })),
-                    })
-                  }
-
-                  // Vendor prefixes
-                  if (ad.vendorPrefixCount > 10) autoItems.push({ severity: 'low', title: 'Automatizar vendor prefixes', value: `${ad.vendorPrefixCount}`, description: 'Configurar Autoprefixer.' })
-                }
-
                 return (
                   <div className="space-y-6">
                     {/* Header + Scan selector + Add button */}
@@ -2050,6 +2336,7 @@ export function DashboardPage() {
                         {/* Scan selector */}
                         {scans.length > 1 && (
                           <select
+                            aria-label="Escaneo para el plan"
                             value={activePlanScanId || ''}
                             onChange={(e) => {
                               setPlanScanId(e.target.value)
@@ -2089,17 +2376,12 @@ export function DashboardPage() {
                         <span className="font-semibold text-[#1a2e23]">{activePlanScan.label || 'Sin etiqueta'}</span>
                         <span>·</span>
                         <span>{new Date(activePlanScan.created_at).toLocaleDateString('es-ES', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
-                        {planDetail?.analysis_data && (() => {
-                          const ad = planDetail.analysis_data as AnalysisResult
-                          return (
-                            <>
-                              <span>·</span>
-                              <span>Score: <span className="font-bold" style={{ color: getScoreBand(ad.healthScore).color }}>{ad.healthScore}</span></span>
-                              <span>·</span>
-                              <span>{(ad.fileSize / 1024).toFixed(0)} KB</span>
-                            </>
-                          )
-                        })()}
+                        {/* Columnas del propio escaneo: disponibles aunque el
+                            detalle completo aún esté cargando. */}
+                        <span>·</span>
+                        <span>Score: <span className="font-bold" style={{ color: getScoreBand(activePlanScan.health_score).color }}>{activePlanScan.health_score}</span></span>
+                        <span>·</span>
+                        <span>{(activePlanScan.file_size / 1024).toFixed(0)} KB</span>
                         {activePlanScanId !== scans[0]?.id && (
                           <>
                             <span className="ml-auto" />
@@ -2114,29 +2396,66 @@ export function DashboardPage() {
                       </div>
                     )}
 
+                    {/* Errores de las acciones (crear/editar van en el modal) */}
+                    {actionError && (
+                      <div role="alert" className="flex items-start gap-2 p-3 rounded-lg bg-[#fef2f1]">
+                        <XCircle size={14} className="text-[#9e2b25] shrink-0 mt-0.5" />
+                        <p className="text-xs text-[#9e2b25] flex-1">{actionError}</p>
+                        <button
+                          onClick={() => setActionError(null)}
+                          aria-label="Cerrar aviso"
+                          className="p-0.5 rounded hover:bg-[#fbe8e6]"
+                        >
+                          <X size={12} className="text-[#9e2b25]" />
+                        </button>
+                      </div>
+                    )}
+
+                    {/* Estado del detalle completo del escaneo del plan */}
+                    {planDetailErrorMsg ? (
+                      <Card className="p-4 flex items-center gap-3" role="alert" style={{ background: '#fef6e0' }}>
+                        <AlertTriangle size={16} className="text-[#a67c00] shrink-0" />
+                        <p className="text-xs text-[#a67c00] flex-1">
+                          No se pudo cargar el detalle de este escaneo; las acciones automáticas no están disponibles. {planDetailErrorMsg}
+                        </p>
+                        <Button variant="outline" size="sm" onClick={retryPlanDetail} disabled={isPlanLatest && latestDetailLoading}>
+                          Reintentar
+                        </Button>
+                      </Card>
+                    ) : planDetailLoading ? (
+                      <div className="flex items-center gap-2 py-2 justify-center">
+                        <Loader2 size={14} className="animate-spin text-[#006c48]" />
+                        <span className="text-xs text-[#52695b]">Cargando el detalle del escaneo para las acciones automáticas...</span>
+                      </div>
+                    ) : null}
+
                     {/* Add / Edit modal */}
                     {showAddForm && (
                       <div className="fixed inset-0 z-50 flex items-center justify-center" onClick={resetForm}>
                         {/* Backdrop */}
                         <div className="absolute inset-0 bg-black/30 backdrop-blur-sm" />
-                        {/* Modal */}
+                        {/* Modal (Escape lo cierra: ver efecto sobre showAddForm) */}
                         <div
+                          role="dialog"
+                          aria-modal="true"
+                          aria-labelledby={`${formIds}-title`}
                           className="relative w-full max-w-md mx-4 rounded-2xl p-6 shadow-xl"
                           style={{ background: '#ffffff', border: '1px solid rgba(11, 31, 22, 0.08)' }}
                           onClick={(e) => e.stopPropagation()}
                         >
                           <div className="flex items-center justify-between mb-5">
-                            <h3 className="text-base font-semibold text-[#1a2e23]">
+                            <h3 id={`${formIds}-title`} className="text-base font-semibold text-[#1a2e23]">
                               {editingItemId ? 'Editar acción' : 'Nueva acción'}
                             </h3>
-                            <button onClick={resetForm} className="p-1.5 rounded-lg hover:bg-[#f0f2f1] transition-colors">
+                            <button onClick={resetForm} aria-label="Cerrar" className="p-1.5 rounded-lg hover:bg-[#f0f2f1] transition-colors">
                               <X size={18} className="text-[#52695b]" />
                             </button>
                           </div>
                           <div className="space-y-4">
                             <div>
-                              <label className="block text-sm font-medium text-[#1a2e23] mb-1.5">Título</label>
+                              <label htmlFor={`${formIds}-titulo`} className="block text-sm font-medium text-[#1a2e23] mb-1.5">Título</label>
                               <input
+                                id={`${formIds}-titulo`}
                                 type="text"
                                 value={formTitle}
                                 onChange={(e) => setFormTitle(e.target.value)}
@@ -2147,11 +2466,13 @@ export function DashboardPage() {
                               />
                             </div>
                             <div>
-                              <label className="block text-sm font-medium text-[#1a2e23] mb-1.5">Prioridad</label>
-                              <div className="flex gap-2">
+                              <p id={`${formIds}-prioridad`} className="block text-sm font-medium text-[#1a2e23] mb-1.5">Prioridad</p>
+                              <div className="flex gap-2" role="group" aria-labelledby={`${formIds}-prioridad`}>
                                 {(['critical', 'high', 'medium', 'low'] as ActionPriority[]).map((p) => (
                                   <button
                                     key={p}
+                                    type="button"
+                                    aria-pressed={formPriority === p}
                                     onClick={() => setFormPriority(p)}
                                     className="flex-1 px-3 py-2 rounded-lg text-xs font-medium transition-all"
                                     style={{
@@ -2167,8 +2488,9 @@ export function DashboardPage() {
                               </div>
                             </div>
                             <div>
-                              <label className="block text-sm font-medium text-[#1a2e23] mb-1.5">Descripción <span className="text-[#8a9b92] font-normal">(opcional)</span></label>
+                              <label htmlFor={`${formIds}-descripcion`} className="block text-sm font-medium text-[#1a2e23] mb-1.5">Descripción <span className="text-[#8a9b92] font-normal">(opcional)</span></label>
                               <textarea
+                                id={`${formIds}-descripcion`}
                                 value={formDescription}
                                 onChange={(e) => setFormDescription(e.target.value)}
                                 placeholder="Contexto, pasos, notas..."
@@ -2177,14 +2499,19 @@ export function DashboardPage() {
                                 style={{ border: '1px solid rgba(11, 31, 22, 0.14)' }}
                               />
                             </div>
+                            {formError && (
+                              <p role="alert" className="text-xs text-[#9e2b25] bg-[#fef2f1] rounded-lg px-3 py-2">
+                                {formError}
+                              </p>
+                            )}
                             <div className="flex gap-3 pt-2">
                               <Button
                                 className="flex-1 h-10"
                                 style={{ background: '#012d1d' }}
                                 onClick={editingItemId ? handleUpdateItem : handleAddItem}
-                                disabled={!formTitle.trim()}
+                                disabled={!formTitle.trim() || formSaving}
                               >
-                                {editingItemId ? 'Guardar cambios' : 'Añadir acción'}
+                                {formSaving ? 'Guardando…' : editingItemId ? 'Guardar cambios' : 'Añadir acción'}
                               </Button>
                               <Button variant="outline" className="flex-1 h-10" onClick={resetForm}>
                                 Cancelar
@@ -2223,14 +2550,18 @@ export function DashboardPage() {
                                     <div className="flex flex-col gap-0.5 shrink-0 pt-0.5">
                                       <button
                                         onClick={() => handleMoveItem(manualIdx, 'up')}
-                                        disabled={manualIdx === 0}
+                                        disabled={manualIdx === 0 || reorderPending}
+                                        aria-label={`Subir «${item.title}»`}
+                                        title="Subir"
                                         className="p-0.5 rounded hover:bg-[#f0f2f1] disabled:opacity-20 transition-opacity"
                                       >
                                         <ChevronUp size={14} className="text-[#52695b]" />
                                       </button>
                                       <button
                                         onClick={() => handleMoveItem(manualIdx, 'down')}
-                                        disabled={manualIdx === actionItems.length - 1}
+                                        disabled={manualIdx === actionItems.length - 1 || reorderPending}
+                                        aria-label={`Bajar «${item.title}»`}
+                                        title="Bajar"
                                         className="p-0.5 rounded hover:bg-[#f0f2f1] disabled:opacity-20 transition-opacity"
                                       >
                                         <ChevronDown size={14} className="text-[#52695b]" />
@@ -2253,11 +2584,11 @@ export function DashboardPage() {
                                       </p>
                                     </div>
                                     {/* Actions */}
-                                    <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
-                                      <button onClick={() => startEdit(item)} className="p-1.5 rounded hover:bg-[#f0f2f1] transition-colors" title="Editar">
+                                    <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity shrink-0">
+                                      <button onClick={() => startEdit(item)} className="p-1.5 rounded hover:bg-[#f0f2f1] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#006c48]" title="Editar" aria-label={`Editar «${item.title}»`}>
                                         <Pencil size={13} className="text-[#52695b]" />
                                       </button>
-                                      <button onClick={() => handleDeleteItem(item.id)} className="p-1.5 rounded hover:bg-[#fbe8e6] transition-colors" title="Eliminar">
+                                      <button onClick={() => handleDeleteItem(item.id)} className="p-1.5 rounded hover:bg-[#fbe8e6] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#9e2b25]" title="Eliminar" aria-label={`Eliminar «${item.title}»`}>
                                         <Trash2 size={13} className="text-[#9e2b25]" />
                                       </button>
                                     </div>
@@ -2270,18 +2601,29 @@ export function DashboardPage() {
                               const hasDetails = entry.detailHeaders && entry.detailRows && entry.detailRows.length > 0
                               const PREVIEW = 10
                               const visibleRows = isExpanded ? entry.detailRows : entry.detailRows?.slice(0, PREVIEW)
+                              const toggleExpanded = () => {
+                                if (!hasDetails) return
+                                setExpandedAutoItems(prev => {
+                                  const next = new Set(prev)
+                                  next.has(autoIdx) ? next.delete(autoIdx) : next.add(autoIdx)
+                                  return next
+                                })
+                              }
 
                               return (
                                 <Card key={`auto-${i}`} className="p-4" style={{ borderLeft: `3px solid ${sevColor[entry.severity]}` }}>
                                   <div
-                                    className={`flex items-start justify-between gap-4 ${hasDetails ? 'cursor-pointer' : ''}`}
-                                    onClick={() => {
+                                    className={`flex items-start justify-between gap-4 ${hasDetails ? 'cursor-pointer rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#006c48]' : ''}`}
+                                    role={hasDetails ? 'button' : undefined}
+                                    tabIndex={hasDetails ? 0 : undefined}
+                                    aria-expanded={hasDetails ? isExpanded : undefined}
+                                    onClick={toggleExpanded}
+                                    onKeyDown={(e) => {
                                       if (!hasDetails) return
-                                      setExpandedAutoItems(prev => {
-                                        const next = new Set(prev)
-                                        next.has(autoIdx) ? next.delete(autoIdx) : next.add(autoIdx)
-                                        return next
-                                      })
+                                      if (e.key === 'Enter' || e.key === ' ') {
+                                        e.preventDefault()
+                                        toggleExpanded()
+                                      }
                                     }}
                                   >
                                     <div className="flex-1 min-w-0">
@@ -2352,12 +2694,14 @@ export function DashboardPage() {
                             }
                           })}
                         </div>
-                      ) : (
+                      ) : planDetail ? (
+                        // Solo afirmamos "sin acciones" con el detalle real cargado:
+                        // mientras carga o si falló, el aviso de arriba lo explica.
                         <Card className="p-8 text-center" style={{ background: '#e5f2ec' }}>
                           <CheckCircle size={32} className="mx-auto mb-2 text-[#006c48]" />
                           <p className="text-sm font-medium text-[#006c48]">Sin acciones pendientes. Tu CSS está en buen estado.</p>
                         </Card>
-                      )
+                      ) : null
                     })()}
                   </div>
                 )
@@ -2375,16 +2719,9 @@ export function DashboardPage() {
         )}
       </div>
 
-      {/* ScanDetailModal for future use */}
-      {selectedScanId && latestDetail && (
-        <ScanDetailModal
-          scanId={latestDetail.id}
-          analysis_data={latestDetail.analysis_data}
-          w3c_validation={latestDetail.w3c_validation}
-          ds_coverage={latestDetail.ds_coverage}
-          onClose={() => setSelectedScanId(null)}
-          {...(latestDetail as any)}
-        />
+      {/* Detalle del escaneo pulsado en el historial */}
+      {selectedScanId && (
+        <ScanDetailModal scanId={selectedScanId} onClose={() => setSelectedScanId(null)} />
       )}
     </div>
   )

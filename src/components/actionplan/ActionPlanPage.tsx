@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import type { AnalysisResult } from '@/types/analysis'
 import { useAnalysis } from '@/hooks/useAnalysis'
+import { useAuth } from '@/contexts/AuthContext'
 import { classifyFamily, DS_APPROVED_WEIGHTS, nearestApprovedWeight } from '@/lib/font-utils'
 import { getScoreBand } from '@/lib/score-band'
 import { Card } from '@/components/ui/card'
@@ -27,6 +28,8 @@ import {
   updateActionItem,
   deleteActionItem,
   reorderActionItems,
+  isAnalysisResult,
+  isAbortError,
 } from '@/lib/scan-storage'
 
 // ─── Priority Levels ─────────────────────────────────────────────
@@ -63,6 +66,9 @@ const PRIORITY_CONFIG: Record<Priority, { label: string; color: string; bg: stri
 // ─── Generate Action Items ───────────────────────────────────────
 function generateActions(result: AnalysisResult): AutoActionItem[] {
   const actions: AutoActionItem[] = []
+  // Un analysis_data incompleto (p.ej. {}) dejaba la página en blanco al leer
+  // result.colors.length: sin datos válidos no hay acciones automáticas.
+  if (!isAnalysisResult(result)) return actions
 
   // 1. !important abuse
   if (result.importantCount > 0) {
@@ -457,10 +463,32 @@ function DetailTable({ headers, rows }: { headers: string[]; rows: DetailRow[] }
   )
 }
 
+/** Mensaje legible de un error (Error o PostgrestError de Supabase, que no siempre extiende Error). */
+function errorMessage(err: unknown, fallback: string): string {
+  if (err instanceof Error && err.message) return err.message
+  if (err && typeof err === 'object' && 'message' in err && typeof err.message === 'string' && err.message) {
+    return err.message
+  }
+  return fallback
+}
+
+/**
+ * Monta useAnalysis solo cuando hace falta el fallback local (no hay proyectos):
+ * así el CSS pegado en Analizar no se vuelve a parsear en cada visita cuando la
+ * auditoría sale de Supabase.
+ */
+function LocalAnalysisProbe({ onResult }: { onResult: (result: AnalysisResult | null) => void }) {
+  const { result } = useAnalysis()
+  useEffect(() => { onResult(result) }, [result, onResult])
+  return null
+}
+
 // ─── Main Component ──────────────────────────────────────────────
 export function ActionPlanPage() {
-  // Local-session analysis (used as a fallback if no project is selected/loaded)
-  const { result: localResult } = useAnalysis()
+  const { user, profile } = useAuth()
+
+  // Local-session analysis: solo se usa si NO hay ningún proyecto (ver LocalAnalysisProbe)
+  const [localResult, setLocalResult] = useState<AnalysisResult | null>(null)
 
   // ── Project + scan data loaded from Supabase so the audit is visible
   //    to every authenticated user, not just whoever ran the analysis locally.
@@ -470,10 +498,20 @@ export function ActionPlanPage() {
   const [loadingProjects, setLoadingProjects] = useState(true)
   const [loadingDetail, setLoadingDetail] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
+  // Fallo al cargar el último escaneo (distinto de "el proyecto no tiene escaneos")
+  const [detailError, setDetailError] = useState<string | null>(null)
+  // Proyecto cuya consulta del último escaneo ya terminó con éxito (null = pendiente):
+  // evita mostrar "sin escaneos" antes de saberlo.
+  const [detailLoadedFor, setDetailLoadedFor] = useState<string | null>(null)
+  const [projectsReloadKey, setProjectsReloadKey] = useState(0)
+  const [detailReloadKey, setDetailReloadKey] = useState(0)
 
   // ── Manual action items (persisted, attributed to a creator) ──
   const [manualItems, setManualItems] = useState<DbActionItem[]>([])
   const [manualLoading, setManualLoading] = useState(false)
+  // Error visible de carga/borrado/reordenación de acciones del equipo
+  const [actionError, setActionError] = useState<string | null>(null)
+  const [reordering, setReordering] = useState(false)
 
   // ── Add / edit form state ──
   const [showForm, setShowForm] = useState(false)
@@ -482,11 +520,26 @@ export function ActionPlanPage() {
   const [formDescription, setFormDescription] = useState('')
   const [formPriority, setFormPriority] = useState<ActionPriority>('medium')
   const [savingForm, setSavingForm] = useState(false)
+  const [formError, setFormError] = useState<string | null>(null)
 
-  // Load projects once on mount and pick the most recent as default.
+  // Ids para asociar labels/inputs y el título del diálogo
+  const formId = useId()
+  const dialogTitleId = `${formId}-dialog-title`
+  const titleInputId = `${formId}-title`
+  const priorityLabelId = `${formId}-priority`
+  const descriptionInputId = `${formId}-description`
+  const titleInputRef = useRef<HTMLInputElement>(null)
+
+  // Proyecto seleccionado "actual" para descartar respuestas que llegan tarde
+  // (tras cambiar de proyecto) en refrescos y acciones asíncronas.
+  const selectedProjectRef = useRef(selectedProjectId)
+  useEffect(() => { selectedProjectRef.current = selectedProjectId }, [selectedProjectId])
+
+  // Load projects on mount (and on retry) and pick the most recent as default.
   useEffect(() => {
     let cancelled = false
     setLoadingProjects(true)
+    setLoadError(null)
     getProjects()
       .then(list => {
         if (cancelled) return
@@ -496,82 +549,143 @@ export function ActionPlanPage() {
       .catch(err => {
         if (cancelled) return
         console.error('[ActionPlan] Error loading projects:', err)
-        setLoadError(err instanceof Error ? err.message : 'Error al cargar los proyectos')
+        setLoadError(errorMessage(err, 'Error al cargar los proyectos'))
       })
       .finally(() => {
         if (cancelled) return
         setLoadingProjects(false)
       })
     return () => { cancelled = true }
-  }, [])
+  }, [projectsReloadKey])
 
-  // When the selected project changes, fetch its latest scan + manual items.
+  // When the selected project changes (or on retry), fetch its latest scan.
+  // Se limpia lo anterior al empezar para no mostrar datos del proyecto previo,
+  // y el AbortController descarta/cancela la respuesta si el proyecto cambia.
   useEffect(() => {
+    setLatestDetail(null)
+    setDetailError(null)
+    setDetailLoadedFor(null)
     if (!selectedProjectId) {
-      setLatestDetail(null)
-      setManualItems([])
+      setLoadingDetail(false)
+      return
+    }
+    const projectId = selectedProjectId
+    const controller = new AbortController()
+    setLoadingDetail(true)
+    getLatestScanDetail(projectId, controller.signal)
+      .then(detail => {
+        if (controller.signal.aborted) return
+        if (detail && !isAnalysisResult(detail.analysis_data)) {
+          setDetailError('El último escaneo de este proyecto está incompleto o dañado.')
+          return
+        }
+        setLatestDetail(detail)
+        setDetailLoadedFor(projectId)
+      })
+      .catch(err => {
+        if (controller.signal.aborted || isAbortError(err)) return
+        console.error('[ActionPlan] Error loading latest scan:', err)
+        setDetailError(errorMessage(err, 'Error al cargar el último escaneo'))
+      })
+      .finally(() => {
+        if (controller.signal.aborted) return
+        setLoadingDetail(false)
+      })
+    return () => controller.abort()
+  }, [selectedProjectId, detailReloadKey])
+
+  // Manual items of the selected project (independiente del escaneo, que pesa más).
+  useEffect(() => {
+    setManualItems([])
+    setActionError(null)
+    if (!selectedProjectId) {
+      setManualLoading(false)
       return
     }
     let cancelled = false
-    setLoadingDetail(true)
     setManualLoading(true)
-    Promise.all([
-      getLatestScanDetail(selectedProjectId).catch(err => {
-        console.warn('[ActionPlan] No scan detail:', err)
-        return null
-      }),
-      getActionItems(selectedProjectId).catch(err => {
-        console.warn('[ActionPlan] No action items:', err)
-        return [] as DbActionItem[]
-      }),
-    ]).then(([detail, items]) => {
-      if (cancelled) return
-      setLatestDetail(detail)
-      setManualItems(items)
-    }).finally(() => {
-      if (cancelled) return
-      setLoadingDetail(false)
-      setManualLoading(false)
-    })
+    getActionItems(selectedProjectId)
+      .then(items => {
+        if (cancelled) return
+        setManualItems(items)
+      })
+      .catch(err => {
+        if (cancelled) return
+        console.error('[ActionPlan] Error loading action items:', err)
+        setActionError(`No se pudieron cargar las acciones del equipo: ${errorMessage(err, 'error desconocido')}`)
+      })
+      .finally(() => {
+        if (cancelled) return
+        setManualLoading(false)
+      })
     return () => { cancelled = true }
   }, [selectedProjectId])
 
-  // Prefer the persisted scan analysis (shared across users) over the local
-  // in-memory analysis. Falls back to local so a user who pasted CSS but has
-  // no projects yet can still see the auto-generated audit.
-  const activeResult: AnalysisResult | null =
-    (latestDetail?.analysis_data as AnalysisResult | undefined) ?? localResult ?? null
+  // Prefer the persisted scan analysis (shared across users). El análisis local
+  // (CSS pegado sin guardar) solo se usa cuando no existe ningún proyecto: si hay
+  // proyectos, mostrarlo como "acciones del proyecto" sería engañoso.
+  const hasProjects = projects.length > 0
+  const needsLocalFallback = !loadingProjects && !hasProjects && !loadError
+  const activeResult: AnalysisResult | null = hasProjects
+    ? (latestDetail && isAnalysisResult(latestDetail.analysis_data) ? latestDetail.analysis_data : null)
+    : (needsLocalFallback && isAnalysisResult(localResult) ? localResult : null)
 
   const autoActions = useMemo(() => {
     if (!activeResult) return []
     return generateActions(activeResult)
   }, [activeResult])
 
-  const refreshManual = async () => {
-    if (!selectedProjectId) return
+  // Recarga las acciones de `projectId`; si entretanto se cambió de proyecto,
+  // descarta el resultado para no pisar las del proyecto actual.
+  const refreshManual = async (projectId: string) => {
     try {
       setManualLoading(true)
-      const items = await getActionItems(selectedProjectId)
+      const items = await getActionItems(projectId)
+      if (selectedProjectRef.current !== projectId) return
       setManualItems(items)
     } catch (err) {
+      if (selectedProjectRef.current !== projectId) return
       console.error('[ActionPlan] Error refreshing items:', err)
+      setActionError(`No se pudieron recargar las acciones: ${errorMessage(err, 'error desconocido')}`)
     } finally {
-      setManualLoading(false)
+      if (selectedProjectRef.current === projectId) setManualLoading(false)
     }
   }
 
-  const resetForm = () => {
+  const resetForm = useCallback(() => {
     setFormTitle('')
     setFormDescription('')
     setFormPriority('medium')
+    setFormError(null)
     setEditingId(null)
     setShowForm(false)
-  }
+  }, [])
+
+  // Modal accesible: foco al primer campo al abrir, Escape para cerrar y foco
+  // devuelto al botón que lo abrió al cerrar.
+  useEffect(() => {
+    if (!showForm) return
+    const previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    titleInputRef.current?.focus()
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        resetForm()
+      }
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('keydown', onKeyDown)
+      previouslyFocused?.focus()
+    }
+  }, [showForm, resetForm])
 
   const handleSaveForm = async () => {
     if (!selectedProjectId || !formTitle.trim() || savingForm) return
+    const projectId = selectedProjectId
     try {
       setSavingForm(true)
+      setFormError(null)
       if (editingId) {
         await updateActionItem(editingId, {
           title: formTitle.trim(),
@@ -580,16 +694,18 @@ export function ActionPlanPage() {
         })
       } else {
         await createActionItem(
-          selectedProjectId,
+          projectId,
           formTitle.trim(),
           formPriority,
           formDescription.trim(),
         )
       }
       resetForm()
-      await refreshManual()
+      await refreshManual(projectId)
     } catch (err) {
+      // El modal sigue abierto con el error visible para poder reintentar
       console.error('[ActionPlan] Error saving item:', err)
+      setFormError(`No se pudo guardar la acción: ${errorMessage(err, 'error desconocido')}`)
     } finally {
       setSavingForm(false)
     }
@@ -600,31 +716,65 @@ export function ActionPlanPage() {
     setFormTitle(item.title)
     setFormDescription(item.description || '')
     setFormPriority(item.priority)
+    setFormError(null)
     setShowForm(true)
   }
 
-  const handleDelete = async (id: string) => {
+  // Borrar: solo el autor o un super_admin (RLS lo impone; aquí se oculta el botón).
+  const canDelete = (item: DbActionItem) =>
+    (!!user && item.created_by === user.id) || profile?.role === 'super_admin'
+
+  const handleDelete = async (item: DbActionItem) => {
+    if (!selectedProjectId) return
+    if (!confirm('¿Eliminar esta acción?')) return
+    const projectId = selectedProjectId
+    setActionError(null)
     try {
-      await deleteActionItem(id)
-      await refreshManual()
+      await deleteActionItem(item.id)
+      await refreshManual(projectId)
     } catch (err) {
+      if (selectedProjectRef.current !== projectId) return
       console.error('[ActionPlan] Error deleting item:', err)
+      setActionError(errorMessage(err, 'No se pudo eliminar la acción.'))
     }
   }
 
+  // Reordenar de uno en uno: mientras hay una reordenación en curso los botones
+  // ▲/▼ quedan deshabilitados, para que los UPDATEs de dos clics no se mezclen.
   const handleMove = async (index: number, direction: 'up' | 'down') => {
+    if (reordering || !selectedProjectId) return
+    const projectId = selectedProjectId
     const next = [...manualItems]
     const swap = direction === 'up' ? index - 1 : index + 1
     if (swap < 0 || swap >= next.length) return
     ;[next[index], next[swap]] = [next[swap], next[index]]
     setManualItems(next)
+    setActionError(null)
+    setReordering(true)
     try {
-      await reorderActionItems(next.map(i => i.id))
+      // `next` lleva el sort_order ACTUAL de cada fila: solo se actualizan las que cambian
+      await reorderActionItems(next)
+      if (selectedProjectRef.current !== projectId) return
+      // Sincroniza el sort_order local con el que quedó en BD (0..n-1) para que
+      // el siguiente movimiento compare contra valores reales.
+      const newOrder = new Map(next.map((item, i) => [item.id, i]))
+      setManualItems(prev => prev.map(item => {
+        const order = newOrder.get(item.id)
+        return order === undefined ? item : { ...item, sort_order: order }
+      }))
     } catch (err) {
+      if (selectedProjectRef.current !== projectId) return
       console.error('[ActionPlan] Error reordering items:', err)
-      await refreshManual()
+      await refreshManual(projectId)
+      setActionError(`No se pudo cambiar el orden: ${errorMessage(err, 'error desconocido')}`)
+    } finally {
+      setReordering(false)
     }
   }
+
+  // Solo se monta cuando hace falta; va en la misma posición en todos los
+  // returns para no desmontarse (y re-analizar) al cambiar de rama.
+  const localProbe = needsLocalFallback ? <LocalAnalysisProbe onResult={setLocalResult} /> : null
 
   // ─── Loading / Empty states ────────────────────────────────────
   if (loadingProjects) {
@@ -638,9 +788,28 @@ export function ActionPlanPage() {
     )
   }
 
-  // No projects in the DB at all and no local result either
-  if (projects.length === 0 && !activeResult) {
+  // Could not load the project list: error + retry (not the "no projects" empty state)
+  if (!hasProjects && loadError) {
     return (
+      <div className="space-y-6 py-8 px-8 max-w-[1440px] mx-auto w-full">
+        <h2 className="text-xl font-semibold text-[#1a2e23]">Auditoría CSS</h2>
+        <Card className="p-8 text-center" role="alert">
+          <AlertTriangle className="h-10 w-10 mx-auto mb-3 text-[#9e2b25]" />
+          <h3 className="text-base font-semibold text-[#9e2b25] mb-1">No se pudieron cargar los proyectos</h3>
+          <p className="text-sm text-[#52695b] max-w-md mx-auto mb-4">{loadError}</p>
+          <Button size="sm" variant="outline" onClick={() => setProjectsReloadKey(k => k + 1)}>
+            Reintentar
+          </Button>
+        </Card>
+      </div>
+    )
+  }
+
+  // No projects in the DB at all and no local result either
+  if (!hasProjects && !activeResult) {
+    return (
+      <>
+      {localProbe}
       <div className="space-y-6 py-8 px-8 max-w-[1440px] mx-auto w-full">
         <div>
           <h2 className="text-xl font-semibold text-[#1a2e23]">Auditoría CSS</h2>
@@ -667,6 +836,7 @@ export function ActionPlanPage() {
           </Link>
         </Card>
       </div>
+      </>
     )
   }
 
@@ -680,6 +850,8 @@ export function ActionPlanPage() {
   const totalActions = autoActions.length + manualItems.length
 
   return (
+    <>
+    {localProbe}
     <div className="space-y-6 py-8 px-8 max-w-[1440px] mx-auto w-full">
       {/* Header */}
       <div className="flex flex-wrap items-end justify-between gap-4">
@@ -738,6 +910,24 @@ export function ActionPlanPage() {
         </div>
       )}
 
+      {/* Errores de carga / borrado / reordenación de las acciones del equipo */}
+      {actionError && (
+        <div
+          role="alert"
+          className="flex items-start gap-2 rounded-lg px-3 py-2 text-xs text-[#9e2b25] bg-[#fbe8e6]"
+        >
+          <AlertTriangle size={14} className="shrink-0 mt-px" />
+          <span className="flex-1">{actionError}</span>
+          <button
+            onClick={() => setActionError(null)}
+            className="p-0.5 rounded hover:bg-[#9e2b25]/10 transition-colors shrink-0"
+            aria-label="Cerrar aviso"
+          >
+            <X size={12} />
+          </button>
+        </div>
+      )}
+
       {/* Manual (user-created) action items — shown on top so creator attribution is visible first */}
       {manualItems.length > 0 && (
         <div>
@@ -760,17 +950,19 @@ export function ActionPlanPage() {
                   <div className="flex flex-col gap-0.5 shrink-0 pt-0.5">
                     <button
                       onClick={() => handleMove(idx, 'up')}
-                      disabled={idx === 0}
+                      disabled={idx === 0 || reordering}
                       className="p-0.5 rounded hover:bg-[#f0f2f1] disabled:opacity-20 transition-opacity"
                       title="Subir"
+                      aria-label={`Subir «${item.title}»`}
                     >
                       <ChevronUp size={14} className="text-[#52695b]" />
                     </button>
                     <button
                       onClick={() => handleMove(idx, 'down')}
-                      disabled={idx === manualItems.length - 1}
+                      disabled={idx === manualItems.length - 1 || reordering}
                       className="p-0.5 rounded hover:bg-[#f0f2f1] disabled:opacity-20 transition-opacity"
                       title="Bajar"
+                      aria-label={`Bajar «${item.title}»`}
                     >
                       <ChevronDown size={14} className="text-[#52695b]" />
                     </button>
@@ -803,22 +995,26 @@ export function ActionPlanPage() {
                       </span>
                     </p>
                   </div>
-                  {/* Actions */}
-                  <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                  {/* Actions — editar: cualquiera; eliminar: solo autor o super_admin */}
+                  <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity shrink-0">
                     <button
                       onClick={() => handleEdit(item)}
                       className="p-1.5 rounded hover:bg-[#f0f2f1] transition-colors"
                       title="Editar"
+                      aria-label={`Editar «${item.title}»`}
                     >
                       <Pencil size={13} className="text-[#52695b]" />
                     </button>
-                    <button
-                      onClick={() => handleDelete(item.id)}
-                      className="p-1.5 rounded hover:bg-[#fbe8e6] transition-colors"
-                      title="Eliminar"
-                    >
-                      <Trash2 size={13} className="text-[#9e2b25]" />
-                    </button>
+                    {canDelete(item) && (
+                      <button
+                        onClick={() => handleDelete(item)}
+                        className="p-1.5 rounded hover:bg-[#fbe8e6] transition-colors"
+                        title="Eliminar"
+                        aria-label={`Eliminar «${item.title}»`}
+                      >
+                        <Trash2 size={13} className="text-[#9e2b25]" />
+                      </button>
+                    )}
                   </div>
                 </div>
               </Card>
@@ -898,8 +1094,20 @@ export function ActionPlanPage() {
         </Card>
       )}
 
-      {/* If we have a project but no scan yet and no local CSS, guide the user */}
-      {!activeResult && !loadingDetail && selectedProjectId && (
+      {/* The latest scan could not be loaded: error + retry (NOT the "no scans" state) */}
+      {hasProjects && selectedProjectId && detailError && !loadingDetail && (
+        <Card className="p-8 text-center" role="alert">
+          <AlertTriangle className="h-12 w-12 mx-auto mb-3 text-[#9e2b25]" />
+          <h3 className="text-base font-semibold text-[#9e2b25] mb-1">No se pudo cargar el último escaneo</h3>
+          <p className="text-sm text-[#52695b] max-w-md mx-auto mb-4">{detailError}</p>
+          <Button size="sm" variant="outline" onClick={() => setDetailReloadKey(k => k + 1)}>
+            Reintentar
+          </Button>
+        </Card>
+      )}
+
+      {/* The selected project really has no scans yet: guide the user */}
+      {hasProjects && selectedProjectId && detailLoadedFor === selectedProjectId && !latestDetail && !detailError && (
         <Card className="p-8 text-center">
           <Target className="h-12 w-12 mx-auto mb-3 text-[#52695b]/40" />
           <h3 className="text-base font-semibold text-[#52695b] mb-1">Este proyecto no tiene escaneos todavía</h3>
@@ -923,37 +1131,44 @@ export function ActionPlanPage() {
         <div className="fixed inset-0 z-50 flex items-center justify-center" onClick={resetForm}>
           <div className="absolute inset-0 bg-black/30 backdrop-blur-sm" />
           <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={dialogTitleId}
             className="relative w-full max-w-md mx-4 rounded-2xl p-6 shadow-xl"
             style={{ background: '#ffffff', border: '1px solid rgba(11, 31, 22, 0.08)' }}
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between mb-5">
-              <h3 className="text-base font-semibold text-[#1a2e23]">
+              <h3 id={dialogTitleId} className="text-base font-semibold text-[#1a2e23]">
                 {editingId ? 'Editar acción' : 'Nueva acción'}
               </h3>
-              <button onClick={resetForm} className="p-1.5 rounded-lg hover:bg-[#f0f2f1] transition-colors">
+              <button onClick={resetForm} aria-label="Cerrar" className="p-1.5 rounded-lg hover:bg-[#f0f2f1] transition-colors">
                 <X size={18} className="text-[#52695b]" />
               </button>
             </div>
             <div className="space-y-4">
               <div>
-                <label className="block text-sm font-medium text-[#1a2e23] mb-1.5">Título</label>
+                <label htmlFor={titleInputId} className="block text-sm font-medium text-[#1a2e23] mb-1.5">Título</label>
                 <input
+                  ref={titleInputRef}
+                  id={titleInputId}
                   type="text"
                   value={formTitle}
                   onChange={(e) => setFormTitle(e.target.value)}
                   placeholder="Ej: Migrar variables de color a tokens DS..."
                   className="w-full px-3 py-2.5 rounded-lg text-sm bg-white text-[#0b1f16] focus:outline-none focus:ring-2 focus:ring-[#006c48]"
                   style={{ border: '1px solid rgba(11, 31, 22, 0.14)' }}
-                  autoFocus
                 />
               </div>
               <div>
-                <label className="block text-sm font-medium text-[#1a2e23] mb-1.5">Prioridad</label>
-                <div className="flex gap-2">
+                {/* No es un <label>: agrupa botones, no un input */}
+                <span id={priorityLabelId} className="block text-sm font-medium text-[#1a2e23] mb-1.5">Prioridad</span>
+                <div className="flex gap-2" role="group" aria-labelledby={priorityLabelId}>
                   {(['critical', 'high', 'medium', 'low'] as ActionPriority[]).map((p) => (
                     <button
                       key={p}
+                      type="button"
+                      aria-pressed={formPriority === p}
                       onClick={() => setFormPriority(p)}
                       className="flex-1 px-3 py-2 rounded-lg text-xs font-medium transition-all"
                       style={{
@@ -969,10 +1184,11 @@ export function ActionPlanPage() {
                 </div>
               </div>
               <div>
-                <label className="block text-sm font-medium text-[#1a2e23] mb-1.5">
+                <label htmlFor={descriptionInputId} className="block text-sm font-medium text-[#1a2e23] mb-1.5">
                   Descripción <span className="text-[#8a9b92] font-normal">(opcional)</span>
                 </label>
                 <textarea
+                  id={descriptionInputId}
                   value={formDescription}
                   onChange={(e) => setFormDescription(e.target.value)}
                   placeholder="Contexto, pasos, notas..."
@@ -981,6 +1197,9 @@ export function ActionPlanPage() {
                   style={{ border: '1px solid rgba(11, 31, 22, 0.14)' }}
                 />
               </div>
+              {formError && (
+                <p role="alert" className="text-xs text-[#9e2b25]">{formError}</p>
+              )}
               <div className="flex gap-3 pt-2">
                 <Button
                   className="flex-1 h-10"
@@ -1001,5 +1220,6 @@ export function ActionPlanPage() {
         </div>
       )}
     </div>
+    </>
   )
 }

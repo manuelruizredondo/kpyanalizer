@@ -7,6 +7,7 @@ import { InfoTooltip } from '@/components/ui/InfoTooltip'
 import { ScoreRing } from '@/components/ui/ScoreRing'
 import { C } from '@/lib/colors'
 import { classifyFamily } from '@/lib/font-utils'
+import { isAnalysisResult } from '@/lib/scan-storage'
 import {
   Loader2, AlertTriangle, CheckCircle, XCircle,
   Palette, Type, Ruler, Layers, Zap, ShieldCheck, Eye, Info, Underline,
@@ -47,7 +48,28 @@ function extractCssVars(raw: string): Map<string, string> {
 
 /** Normalize a color value for comparison (lowercase, strip spaces) */
 function normColor(v: string): string {
-  return v.toLowerCase().replace(/\s+/g, '').replace(/0\./g, '.')
+  const c = v.toLowerCase().replace(/\s+/g, '')
+    // Solo el 0 inicial de un decimal (0.5 → .5); antes /0\./ también convertía
+    // 210.5 en 21.5.
+    .replace(/(^|[^\d.])0\.(?=\d)/g, '$1.')
+  // #RGB / #RGBA → forma larga, igual que hace el analizador con los colores del usuario
+  const short = /^#([0-9a-f]{3,4})$/.exec(c)
+  return short ? '#' + [...short[1]].map(d => d + d).join('') : c
+}
+
+/**
+ * Normaliza longitudes (spacing, font-size) para comparar: minúsculas, espacios
+ * colapsados (conserva la separación entre valores de un shorthand), 0 inicial
+ * explícito (.5rem → 0.5rem) y sin ceros finales (1.50rem → 1.5rem). NO usar
+ * normColor aquí: quita todos los espacios ("8px 16px" → "8px16px").
+ */
+function normLength(v: string): string {
+  return v.toLowerCase().trim()
+    .replace(/\s+/g, ' ')
+    .replace(/\s*([(),/])\s*/g, '$1')
+    .replace(/(^|[^\d.])\.(?=\d)/g, (_, pre: string) => `${pre}0.`)
+    .replace(/(\.\d*?)0+(?=\D|$)/g, '$1')
+    .replace(/(\d)\.(?=\D|$)/g, '$1')
 }
 
 /** Extract rules that produce an underline-like visual (text-decoration: underline,
@@ -65,14 +87,21 @@ function extractUnderlineRules(raw: string): UnderlineRule[] {
   // Match: prelude { ... } — non-greedy, ignores nested braces at the one level we need
   const ruleRe = /([^{}]+?)\{([^{}]*)\}/g
   let m: RegExpExecArray | null
+  // Nº de línea incremental: contar solo los saltos entre la regla anterior y
+  // ésta (antes se re-partía todo el CSS previo por regla → O(n²) en CSS grandes).
+  let line = 1
+  let lastIdx = 0
   while ((m = ruleRe.exec(raw)) !== null) {
+    // Line number of the prelude start (se calcula antes de cualquier `continue`)
+    const startIdx = m.index
+    for (let i = lastIdx; i < startIdx; i++) {
+      if (raw.charCodeAt(i) === 10) line++
+    }
+    lastIdx = startIdx
+
     const prelude = m[1].trim()
     const body = m[2]
     if (!prelude || prelude.startsWith('@')) continue // skip at-rules preludes
-
-    // Line number of the prelude start
-    const startIdx = m.index
-    const line = raw.slice(0, startIdx).split('\n').length
 
     // Find declarations we care about
     const decls: { property: UnderlineRule['property']; value: string }[] = []
@@ -125,6 +154,15 @@ function targetsFormField(sel: string): boolean {
   return /^(input|textarea|select)(?![-a-z])/i.test(base)
 }
 
+/** Compara especificidades (a,b,c) lexicográficamente: <0 si a es menor, >0 si es mayor. */
+function compareSpecificity(a: readonly number[], b: readonly number[]): number {
+  for (let i = 0; i < 3; i++) {
+    const d = (a[i] ?? 0) - (b[i] ?? 0)
+    if (d !== 0) return d
+  }
+  return 0
+}
+
 // ─── Main Component ──────────────────────────────────────────────
 interface ConfrontarTabProps {
   hg5Result: AnalysisResult | null
@@ -162,6 +200,20 @@ export function ConfrontarTab({ hg5Result, userResult, hg5Loading, hg5Error, onR
       <Card className="p-8 text-center">
         <Info size={32} className="mx-auto mb-3 text-[#3d5a4a]/30" />
         <p className="text-sm text-[#3d5a4a]">No hay escaneos para comparar. Guarda un escaneo desde "Analizar" primero.</p>
+      </Card>
+    )
+  }
+
+  // Un escaneo antiguo o dañado puede traer analysis_data incompleto: sin esta
+  // comprobación, user.colors.filter(...) tumbaría toda la pestaña.
+  if (!isAnalysisResult(userResult)) {
+    return (
+      <Card className="p-8 text-center">
+        <AlertTriangle size={32} className="mx-auto mb-3 text-[#a67c00]" />
+        <p className="text-sm text-[#3d5a4a]">
+          El análisis de este escaneo está incompleto o dañado y no se puede comparar con HG5.
+          Vuelve a guardar un escaneo desde "Analizar".
+        </p>
       </Card>
     )
   }
@@ -244,14 +296,36 @@ function AuditContent({ hg5, user, onRetry }: { hg5: AnalysisResult; user: Analy
     const importantsInUser = user.importants || []
 
     // ── Substitution suggestions: match user hardcoded values → HG5 variables ──
-    // Build reverse lookup: normalized value → variable name(s)
-    const hg5ValueToVar = new Map<string, string[]>()
-    for (const [name, value] of hg5Vars) {
-      const nv = normColor(value)
-      const existing = hg5ValueToVar.get(nv) || []
-      existing.push(name)
-      hg5ValueToVar.set(nv, existing)
+    // Build reverse lookup: normalized value → variable name(s). Un mapa por
+    // categoría, cada uno con su normalizador aplicado igual a ambos lados: el de
+    // color no sirve para longitudes (convertía 10.5px en 1.5px y rompía los
+    // shorthands), y así un margin no sugiere una variable de font-size.
+    function buildReverseLookup(vars: Iterable<[string, string]>, norm: (v: string) => string) {
+      const map = new Map<string, string[]>()
+      for (const [name, value] of vars) {
+        const nv = norm(value)
+        const existing = map.get(nv) || []
+        existing.push(name)
+        map.set(nv, existing)
+      }
+      return map
     }
+    // hg5SpacingVars también recoge las de tipografía (su nombre contiene "size"):
+    // se separan por nombre.
+    const TYPO_VAR = /font|text|letter|line-height/i
+    const isFontSizeVar = (name: string) => /font|text|typo/i.test(name) && /size/i.test(name)
+    // Color: todas las variables, como antes (los valores de longitud nunca
+    // coinciden con un color del usuario y así no se pierden variables de color
+    // cuyo nombre no delata la categoría).
+    const colorValueToVar = buildReverseLookup(hg5Vars, normColor)
+    const spacingValueToVar = buildReverseLookup(
+      [...hg5SpacingVars].filter(([name]) => !TYPO_VAR.test(name)),
+      normLength,
+    )
+    const fontSizeValueToVar = buildReverseLookup(
+      [...hg5Vars].filter(([name]) => isFontSizeVar(name)),
+      normLength,
+    )
 
     // Prioritize semantic variable names over literal/descriptive ones.
     // e.g. --hg-color-primary over --hg-color-black for #000000
@@ -267,7 +341,7 @@ function AuditContent({ hg5, user, onRetry }: { hg5: AnalysisResult; user: Analy
     const colorSubstitutions: Substitution[] = []
     for (const c of user.colors) {
       const nv = normColor(c.normalized)
-      const vars = hg5ValueToVar.get(nv)
+      const vars = colorValueToVar.get(nv)
       if (vars && vars.length > 0) {
         colorSubstitutions.push({ userValue: c.normalized, hg5Var: pickBestVar(vars), hg5VarValue: c.normalized, count: c.count, locations: c.locations })
       }
@@ -276,8 +350,8 @@ function AuditContent({ hg5, user, onRetry }: { hg5: AnalysisResult; user: Analy
     // Spacing substitutions
     const spacingSubstitutions: Substitution[] = []
     for (const s of user.spacingValues) {
-      const nv = s.normalized.toLowerCase().trim()
-      const vars = hg5ValueToVar.get(nv)
+      const nv = normLength(s.normalized)
+      const vars = spacingValueToVar.get(nv)
       if (vars && vars.length > 0) {
         spacingSubstitutions.push({ userValue: s.normalized, hg5Var: pickBestVar(vars), hg5VarValue: s.normalized, count: s.count, locations: s.locations })
       }
@@ -286,8 +360,8 @@ function AuditContent({ hg5, user, onRetry }: { hg5: AnalysisResult; user: Analy
     // Font-size substitutions
     const fontSizeSubstitutions: Substitution[] = []
     for (const fs of user.fontSizes) {
-      const nv = fs.normalized.toLowerCase().trim()
-      const vars = hg5ValueToVar.get(nv)
+      const nv = normLength(fs.normalized)
+      const vars = fontSizeValueToVar.get(nv)
       if (vars && vars.length > 0) {
         fontSizeSubstitutions.push({ userValue: fs.normalized, hg5Var: pickBestVar(vars), hg5VarValue: fs.normalized, count: fs.count, locations: fs.locations })
       }
@@ -1148,11 +1222,13 @@ function AuditContent({ hg5, user, onRetry }: { hg5: AnalysisResult; user: Analy
                 { label: 'Duplicados declaración', hg5: hg5.duplicateDeclarations.length, user: user.duplicateDeclarations.length, lowerBetter: true },
                 { label: 'Reutilización', hg5: +(hg5.reuseRatio*100).toFixed(1), user: +(user.reuseRatio*100).toFixed(1), lowerBetter: false, unit: '%' },
                 { label: 'Vendor prefixes', hg5: hg5.vendorPrefixCount, user: user.vendorPrefixCount, lowerBetter: true },
-                { label: 'Max especificidad', hg5: hg5.maxSpecificity.join(','), user: user.maxSpecificity.join(','), lowerBetter: true, isStr: true },
+                { label: 'Max especificidad', hg5: hg5.maxSpecificity.join(','), user: user.maxSpecificity.join(','), lowerBetter: true, isStr: true, cmp: compareSpecificity(user.maxSpecificity, hg5.maxSpecificity) },
                 { label: 'Anidamiento máx', hg5: hg5.deepestNesting, user: user.deepestNesting, lowerBetter: true },
               ].map((row, i) => {
-                const diff = row.isStr ? 0 : (row.user as number) - (row.hg5 as number)
-                const isGood = row.isStr ? String(row.user) === String(row.hg5) : (row.lowerBetter ? diff <= 0 : diff >= 0)
+                // Las tuplas de especificidad se comparan por orden (ids, clases,
+                // elementos) con `cmp`, no como texto, respetando lowerBetter.
+                const diff = row.isStr ? (row.cmp ?? 0) : (row.user as number) - (row.hg5 as number)
+                const isGood = row.lowerBetter ? diff <= 0 : diff >= 0
                 const isBig = !row.isStr && Math.abs(diff) > Math.abs(row.hg5 as number) * 0.3
                 const status = isGood ? 'good' : isBig ? 'bad' : 'warn'
                 const sColor = status === 'good' ? C.green : status === 'bad' ? C.red : C.yellow

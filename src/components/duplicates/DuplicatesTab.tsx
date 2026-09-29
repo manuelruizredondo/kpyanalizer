@@ -1,5 +1,7 @@
-import type { AnalysisResult } from "@/types/analysis"
+import { useMemo, useState } from "react"
+import type { AnalysisResult, DuplicateGroup } from "@/types/analysis"
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import {
   Accordion, AccordionContent, AccordionItem, AccordionTrigger
 } from "@/components/ui/accordion"
@@ -12,7 +14,29 @@ interface DuplicatesTabProps {
   result: AnalysisResult
 }
 
+// Grupos que se pintan de golpe; el resto bajo "Mostrar más" (con CSS grandes
+// hay miles de grupos y cada AccordionItem es caro de montar).
+const GROUP_PAGE = 200
+
+/**
+ * Valor estable para cada AccordionItem basado en la clave del grupo (no en el
+ * índice), para que los paneles abiertos sigan mostrando el mismo grupo cuando
+ * cambia el CSS. Si una clave se repite, se desambigua con un sufijo.
+ */
+function stableValues(prefix: string, groups: DuplicateGroup[]): string[] {
+  const seen = new Map<string, number>()
+  return groups.map(g => {
+    const n = seen.get(g.key) ?? 0
+    seen.set(g.key, n + 1)
+    return n === 0 ? `${prefix}:${g.key}` : `${prefix}:${g.key}#${n}`
+  })
+}
+
 export function DuplicatesTab({ result }: DuplicatesTabProps) {
+  const [selectorLimit, setSelectorLimit] = useState(GROUP_PAGE)
+  const selectorValues = useMemo(() => stableValues("sel", result.duplicateSelectors), [result.duplicateSelectors])
+  const declValues = useMemo(() => stableValues("decl", result.duplicateDeclarations), [result.duplicateDeclarations])
+
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -28,8 +52,8 @@ export function DuplicatesTab({ result }: DuplicatesTabProps) {
           <p className="text-sm text-muted-foreground">No se encontraron selectores duplicados.</p>
         ) : (
           <Accordion type="multiple" className="w-full">
-            {result.duplicateSelectors.map((group, i) => (
-              <AccordionItem key={i} value={`sel-${i}`}>
+            {result.duplicateSelectors.slice(0, selectorLimit).map((group, i) => (
+              <AccordionItem key={selectorValues[i]} value={selectorValues[i]}>
                 <AccordionTrigger className="text-xs font-mono hover:no-underline">
                   <div className="flex items-center gap-2">
                     <Badge variant="outline" className="text-xs">{group.occurrences.length}x</Badge>
@@ -49,6 +73,16 @@ export function DuplicatesTab({ result }: DuplicatesTabProps) {
             ))}
           </Accordion>
         )}
+        {result.duplicateSelectors.length > selectorLimit && (
+          <div className="flex items-center justify-between gap-3 mt-2">
+            <p className="text-xs text-muted-foreground">
+              Mostrando {selectorLimit} de {result.duplicateSelectors.length} selectores duplicados.
+            </p>
+            <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => setSelectorLimit(l => l + GROUP_PAGE)}>
+              Mostrar más
+            </Button>
+          </div>
+        )}
       </section>
 
       {/* Duplicate Declarations */}
@@ -64,7 +98,7 @@ export function DuplicatesTab({ result }: DuplicatesTabProps) {
         ) : (
           <Accordion type="multiple" className="w-full">
             {result.duplicateDeclarations.slice(0, 50).map((group, i) => (
-              <AccordionItem key={i} value={`decl-${i}`}>
+              <AccordionItem key={declValues[i]} value={declValues[i]}>
                 <AccordionTrigger className="text-xs font-mono hover:no-underline">
                   <div className="flex items-center gap-2">
                     <Badge variant="outline" className="text-xs">{group.occurrences.length}x</Badge>

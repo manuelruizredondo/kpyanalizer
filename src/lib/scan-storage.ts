@@ -1,6 +1,93 @@
-import { supabase } from '@/lib/supabase'
+import { supabase, SUPABASE_URL, SUPABASE_ANON_KEY } from '@/lib/supabase'
 import type { AnalysisResult } from '@/types/analysis'
 import { analyzeCss } from '@/lib/analyzer'
+
+/**
+ * GET directo a PostgREST con timeout y cancelación. Se usa en lugar de
+ * supabase-js para lecturas pesadas porque éste no permite fijar un timeout.
+ * El timeout cubre TAMBIÉN la descarga del cuerpo (no solo las cabeceras): con
+ * detalles de varios MB, un corte a mitad de descarga dejaría la UI colgada.
+ * `signal` permite al llamador abortar (p. ej. al cambiar de proyecto).
+ */
+export async function restFetch<T = unknown>(
+  path: string,
+  { timeoutMs = 10000, signal }: { timeoutMs?: number; signal?: AbortSignal } = {},
+): Promise<T> {
+  const { data: { session } } = await supabase.auth.getSession()
+  if (!session) throw new Error('Sesión expirada. Por favor, vuelve a iniciar sesión.')
+  const controller = new AbortController()
+  const onAbort = () => controller.abort()
+  signal?.addEventListener('abort', onAbort)
+  const t = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+      signal: controller.signal,
+      headers: {
+        apikey: SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${session.access_token}`,
+        'Content-Type': 'application/json',
+      },
+    })
+    if (!r.ok) throw new Error(`Error ${r.status} al consultar Supabase`)
+    return (await r.json()) as T
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError' && !signal?.aborted) {
+      throw new Error('Supabase tardó demasiado en responder. Revisa tu conexión.')
+    }
+    throw err
+  } finally {
+    clearTimeout(t)
+    signal?.removeEventListener('abort', onAbort)
+  }
+}
+
+/** true si el error viene de un abort pedido por el llamador (no es un fallo real). */
+export function isAbortError(err: unknown): boolean {
+  return err instanceof DOMException && err.name === 'AbortError'
+}
+
+/**
+ * Fila de la vista ligera `scan_metrics`: solo contadores por escaneo (unos KB),
+ * frente a los varios MB de `scan_details.analysis_data`. Es lo que deben usar
+ * las gráficas de evolución, que solo necesitan cifras.
+ */
+export interface ScanMetricsRow {
+  scan_id: string
+  health_score: number
+  important_count: number
+  id_count: number
+  variable_count: number
+  reuse_ratio: number
+  vendor_prefix_count: number
+  universal_count: number
+  pseudo_elements: number
+  pseudo_classes: number
+  angular_count: number
+  ang_host: number
+  ang_host_context: number
+  ang_ng_deep: number
+  ang_deep_combinator: number
+  colors_count: number
+  font_sizes_count: number
+  spacing_count: number
+  zindex_count: number
+  dup_selectors: number
+  dup_declarations: number
+  media_queries: number
+  keyframes_count: number
+  font_families: { value: string; normalized: string; count: number }[]
+}
+
+export async function getScanMetrics(
+  scanIds: string[],
+  signal?: AbortSignal,
+): Promise<ScanMetricsRow[]> {
+  if (scanIds.length === 0) return []
+  return restFetch<ScanMetricsRow[]>(
+    `scan_metrics?select=*&scan_id=in.(${scanIds.join(',')})`,
+    { signal },
+  )
+}
 
 export interface W3cValidationResult {
   valid: boolean
@@ -182,6 +269,9 @@ export async function recomputeProjectScans(projectId: string): Promise<Recomput
   // MB y pedirlos todos en una query supera el statement_timeout (8s) del rol
   // authenticated — la query fallaría entera.
   for (const scanId of ids) {
+    // Cede el hilo entre escaneos: analyzeCss es síncrono y con varios CSS de
+    // MB seguidos la pestaña quedaría congelada durante todo el proceso.
+    await new Promise(r => setTimeout(r, 0))
     const { data: row, error: detErr } = await supabase
       .from('scan_details')
       .select('scan_id, analysis_data')
@@ -257,7 +347,7 @@ export async function getProjectScans(projectId: string): Promise<Scan[]> {
 /**
  * Get a single scan with its full details
  */
-export async function getScanDetail(scanId: string): Promise<ScanDetail> {
+export async function getScanDetail(scanId: string, signal?: AbortSignal): Promise<ScanDetail> {
   const { data: scanData, error: scanError } = await supabase
     .from('scans')
     .select('*')
@@ -265,50 +355,64 @@ export async function getScanDetail(scanId: string): Promise<ScanDetail> {
     .single()
 
   if (scanError) throw scanError
-  if (!scanData) throw new Error('Scan not found')
+  if (!scanData) throw new Error('Escaneo no encontrado')
 
-  const { data: detailData, error: detailError } = await supabase
-    .from('scan_details')
-    .select('analysis_data, w3c_validation, ds_coverage')
-    .eq('scan_id', scanId)
-    .single()
+  return withFullDetail(scanData as Scan, signal)
+}
 
-  if (detailError) throw detailError
-
+/**
+ * Trae el detalle pesado (varios MB) de un escaneo por REST, con un timeout
+ * holgado de descarga, y valida que `analysis_data` tenga forma de análisis.
+ * Lanza si falta: un `{}` vacío como análisis hace reventar cualquier vista que
+ * lea `result.colors.length` y, sin ErrorBoundary, deja la app en blanco.
+ */
+async function withFullDetail(scan: Scan, signal?: AbortSignal): Promise<ScanDetail> {
+  const rows = await restFetch<
+    { analysis_data: AnalysisResult | null; w3c_validation?: W3cValidationResult; ds_coverage?: DsCoverageResult }[]
+  >(
+    `scan_details?select=analysis_data,w3c_validation,ds_coverage&scan_id=eq.${scan.id}&limit=1`,
+    { timeoutMs: 30000, signal },
+  )
+  const detail = rows[0]
+  if (!detail || !isAnalysisResult(detail.analysis_data)) {
+    throw new Error('El detalle de este escaneo no está disponible.')
+  }
   return {
-    ...scanData,
-    analysis_data: detailData?.analysis_data || {},
-    w3c_validation: detailData?.w3c_validation,
-    ds_coverage: detailData?.ds_coverage,
-  } as ScanDetail
+    ...scan,
+    analysis_data: detail.analysis_data,
+    w3c_validation: detail.w3c_validation ?? undefined,
+    ds_coverage: detail.ds_coverage ?? undefined,
+  }
+}
+
+/** Comprobación mínima de forma: las vistas asumen estas arrays presentes. */
+export function isAnalysisResult(x: unknown): x is AnalysisResult {
+  if (!x || typeof x !== 'object') return false
+  const a = x as Partial<AnalysisResult>
+  return Array.isArray(a.colors) && Array.isArray(a.fontSizes) && Array.isArray(a.duplicateSelectors)
 }
 
 /**
  * Get the latest scan detail (with W3C + DS data) for a project
  */
-export async function getLatestScanDetail(projectId: string): Promise<ScanDetail | null> {
+export async function getLatestScanDetail(
+  projectId: string,
+  signal?: AbortSignal,
+): Promise<ScanDetail | null> {
+  // maybeSingle: "sin escaneos" devuelve null; un fallo real (red, 401…) lanza,
+  // para que el llamador no lo confunda con un proyecto vacío.
   const { data: scanData, error: scanError } = await supabase
     .from('scans')
     .select('*')
     .eq('project_id', projectId)
     .order('created_at', { ascending: false })
     .limit(1)
-    .single()
+    .maybeSingle()
 
-  if (scanError || !scanData) return null
+  if (scanError) throw scanError
+  if (!scanData) return null
 
-  const { data: detailData } = await supabase
-    .from('scan_details')
-    .select('analysis_data, w3c_validation, ds_coverage')
-    .eq('scan_id', scanData.id)
-    .single()
-
-  return {
-    ...scanData,
-    analysis_data: detailData?.analysis_data || {},
-    w3c_validation: detailData?.w3c_validation,
-    ds_coverage: detailData?.ds_coverage,
-  } as ScanDetail
+  return withFullDetail(scanData as Scan, signal)
 }
 
 /**
@@ -346,15 +450,7 @@ export async function createProject(
   description?: string,
   userId?: string
 ): Promise<string> {
-  // Get current user if userId not provided
-  let finalUserId = userId
-  if (!finalUserId) {
-    const {
-      data: { user },
-    } = await supabase.auth.getUser()
-    if (!user) throw new Error('User not authenticated')
-    finalUserId = user.id
-  }
+  const finalUserId = userId ?? (await ensureAuth()).id
 
   const { data, error } = await supabase
     .from('projects')
@@ -376,16 +472,27 @@ export async function createProject(
  * Delete a project (cascades to scans and scan_details)
  */
 export async function deleteProject(projectId: string): Promise<void> {
-  const { error } = await supabase.from('projects').delete().eq('id', projectId)
-  if (error) throw error
+  await deleteOwnedRow('projects', projectId)
 }
 
 /**
  * Delete a scan (cascades to scan_details)
  */
 export async function deleteScan(scanId: string): Promise<void> {
-  const { error } = await supabase.from('scans').delete().eq('id', scanId)
+  await deleteOwnedRow('scans', scanId)
+}
+
+/**
+ * Borra una fila y comprueba que se borró de verdad. Si RLS lo impide (solo el
+ * autor o un super_admin pueden borrar), PostgREST no da error: simplemente
+ * borra 0 filas. Sin esta comprobación la UI creería que el borrado funcionó.
+ */
+async function deleteOwnedRow(table: 'projects' | 'scans' | 'action_items', id: string) {
+  const { data, error } = await supabase.from(table).delete().eq('id', id).select('id')
   if (error) throw error
+  if (!data || data.length === 0) {
+    throw new Error('No se ha podido eliminar: solo su autor o un administrador puede hacerlo.')
+  }
 }
 
 // ─── Action Items ──────────────────────────────────────────────────
@@ -428,16 +535,16 @@ export async function createActionItem(
   priority: ActionPriority,
   description: string = '',
 ): Promise<ActionItem> {
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) throw new Error('User not authenticated')
+  const user = await ensureAuth()
 
   // Get max sort_order for this project
-  const { data: existing } = await supabase
+  const { data: existing, error: orderError } = await supabase
     .from('action_items')
     .select('sort_order')
     .eq('project_id', projectId)
     .order('sort_order', { ascending: false })
     .limit(1)
+  if (orderError) throw orderError
 
   const nextOrder = (existing && existing.length > 0 ? existing[0].sort_order : -1) + 1
 
@@ -478,18 +585,22 @@ export async function updateActionItem(
  * Delete an action item
  */
 export async function deleteActionItem(id: string): Promise<void> {
-  const { error } = await supabase.from('action_items').delete().eq('id', id)
-  if (error) throw error
+  await deleteOwnedRow('action_items', id)
 }
 
 /**
- * Reorder action items — receives the full ordered list of IDs
+ * Reordena las acciones. Recibe la lista en el orden deseado, con su
+ * sort_order ACTUAL, y solo actualiza las filas cuyo orden cambia (un
+ * intercambio = 2 UPDATEs, no N). Normaliza a 0..n-1, así que también repara
+ * órdenes duplicados que hubieran quedado de antes.
  */
-export async function reorderActionItems(orderedIds: string[]): Promise<void> {
-  // Update each item's sort_order in parallel
-  const updates = orderedIds.map((id, index) =>
-    supabase.from('action_items').update({ sort_order: index }).eq('id', id)
-  )
+export async function reorderActionItems(
+  items: Pick<ActionItem, 'id' | 'sort_order'>[],
+): Promise<void> {
+  const updates = items
+    .map((item, index) => ({ id: item.id, from: item.sort_order, to: index }))
+    .filter(u => u.from !== u.to)
+    .map(u => supabase.from('action_items').update({ sort_order: u.to }).eq('id', u.id))
   const results = await Promise.all(updates)
   const failed = results.find(r => r.error)
   if (failed?.error) throw failed.error

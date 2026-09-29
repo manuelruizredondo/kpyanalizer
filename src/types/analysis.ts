@@ -11,6 +11,12 @@ export interface HardcodedValue {
   normalized: string
   count: number
   locations: LocationReference[]
+  /**
+   * Grafías originales distintas agrupadas bajo `normalized`, con su número de
+   * usos (p.ej. "bold" 3x y "700" 5x → normalized "700"). Opcional: los
+   * escaneos antiguos guardados en la BD no lo traen.
+   */
+  variants?: { value: string; count: number }[]
 }
 
 export interface DuplicateGroup {

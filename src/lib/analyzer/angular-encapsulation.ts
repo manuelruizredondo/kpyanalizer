@@ -2,7 +2,6 @@ import type { CssNode } from "css-tree"
 import { csstree } from "../css-parser"
 import type {
   AngularEncapsulationBreakdown,
-  AngularEncapsulationKind,
   AngularEncapsulationLocation,
 } from "@/types/analysis"
 
@@ -72,17 +71,27 @@ export function extractAngularEncapsulation(
   })
 
   // Pass 2: regex over the raw CSS for the legacy combinators (/deep/ and >>>),
-  // which css-tree may either reject or silently drop. We strip block comments
-  // first to avoid false positives inside /* ... */.
-  const cleaned = stripBlockComments(raw)
+  // which css-tree may either reject or silently drop. Comments, strings and
+  // url(...) are blanked first so `url(/deep/a.png)` or `content: ">>>"` don't
+  // count as false positives.
+  const cleaned = blankNonSelectorText(raw)
   const deepRegex = /\/deep\/|>>>/g
   let match: RegExpExecArray | null
+  // Line/column tracked incrementally (matches arrive in order) instead of
+  // re-splitting the whole prefix on every match.
+  let line = 1
+  let lineStart = 0
+  let scanned = 0
   while ((match = deepRegex.exec(cleaned)) !== null) {
     const idx = match.index
-    const before = cleaned.slice(0, idx)
-    const line = before.split("\n").length
-    const lastNewline = before.lastIndexOf("\n")
-    const column = lastNewline === -1 ? idx : idx - lastNewline - 1
+    for (let i = scanned; i < idx; i++) {
+      if (cleaned.charCodeAt(i) === 10) {
+        line++
+        lineStart = i + 1
+      }
+    }
+    scanned = idx
+    const column = idx - lineStart
     breakdown.deepCombinator++
     locations.push({
       line,
@@ -113,24 +122,13 @@ function serializeSelectorSafely(node: CssNode, fallback: string): string {
 }
 
 /**
- * Replace block comments with whitespace of the same length, preserving offsets
- * so line/column math still matches the original source.
+ * Replace block comments, quoted strings and url(...) with whitespace of the
+ * same length, preserving offsets so line/column math still matches the
+ * original source.
  */
-function stripBlockComments(css: string): string {
-  return css.replace(/\/\*[\s\S]*?\*\//g, (m) =>
-    m.replace(/[^\n]/g, " "),
+function blankNonSelectorText(css: string): string {
+  return css.replace(
+    /\/\*[\s\S]*?\*\/|"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|url\([^)]*\)/gi,
+    (m) => m.replace(/[^\n]/g, " "),
   )
-}
-
-export function summarizeKind(kind: AngularEncapsulationKind): string {
-  switch (kind) {
-    case "host":
-      return ":host"
-    case "host-context":
-      return ":host-context"
-    case "ng-deep":
-      return "::ng-deep"
-    case "deep-combinator":
-      return "/deep/ or >>>"
-  }
 }

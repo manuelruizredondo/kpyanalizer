@@ -34,6 +34,39 @@ as $$
   );
 $$;
 
+-- ---------------------------------------------------------------------------
+-- PROFILES: impedir la auto-escalada de privilegios
+-- ---------------------------------------------------------------------------
+-- La política original deja a cada usuario hacer UPDATE de SU fila de profiles
+-- sin restringir columnas, así que un editor podía ejecutar desde la consola
+--   supabase.from('profiles').update({ role: 'super_admin' }).eq('id', miId)
+-- y convertirse en admin (lo que anula todo el DELETE de abajo). Este trigger
+-- solo deja cambiar `role` a un super_admin. Las sesiones de la app corren como
+-- `authenticated`; el SQL Editor / service_role no quedan afectados.
+create or replace function public.prevent_role_self_escalation()
+returns trigger
+language plpgsql
+-- SECURITY INVOKER a propósito: con DEFINER, current_user sería el dueño de la
+-- función y la comprobación de rol de abajo nunca se cumpliría.
+security invoker
+set search_path = public
+as $$
+begin
+  if new.role is distinct from old.role
+     and current_user in ('authenticated', 'anon')
+     and not public.is_super_admin() then
+    raise exception 'Solo un super_admin puede cambiar roles'
+      using errcode = '42501';
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists profiles_prevent_role_escalation on public.profiles;
+create trigger profiles_prevent_role_escalation
+  before update on public.profiles
+  for each row execute function public.prevent_role_self_escalation();
+
 -- Borra TODAS las políticas actuales de las 4 tablas (agnóstico al nombre)
 do $$
 declare pol record;

@@ -16,11 +16,11 @@ import {
 interface KpiTrendCardProps {
   title: string
   tooltip?: string
-  data: { date: string; value: number; isCurrent?: boolean }[]
+  data: { date: string; value: number }[]
   /** Stroke color for the line */
   color?: string
-  /** Reference goal line. Defaults to 0. Set to undefined to hide. */
-  goal?: number
+  /** Línea de objetivo. Por defecto 0; `goal={null}` la oculta. */
+  goal?: number | null
   goalLabel?: string
   /** Higher is better (e.g. variables). Defaults to false. */
   higherIsBetter?: boolean
@@ -71,7 +71,7 @@ export function KpiTrendCard({
     }
   }
 
-  const resolvedGoalLabel = goalLabel ?? (goal === 0 ? 'Objetivo: 0' : `Ref: ${goal}`)
+  const resolvedGoalLabel = goal == null ? '' : goalLabel ?? (goal === 0 ? 'Objetivo: 0' : `Ref: ${goal}`)
 
   return (
     <Card className="p-4">
@@ -112,7 +112,7 @@ export function KpiTrendCard({
             }}
             labelStyle={{ fontWeight: 600 }}
           />
-          {goal !== undefined && (
+          {goal != null && (
             <ReferenceLine
               y={goal}
               stroke="#006c48"

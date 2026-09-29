@@ -55,15 +55,70 @@ function assessSpecificityGraph(data: { weight: number; line: number }[]): {
 }
 
 // ─── Moving Average for trend line ────────────────────────────────
+// Sumas prefijas: O(n) en vez de re-sumar la ventana en cada punto.
 function movingAverage(data: number[], window: number): number[] {
-  const result: number[] = []
+  const prefix = new Float64Array(data.length + 1)
+  for (let i = 0; i < data.length; i++) prefix[i + 1] = prefix[i] + data[i]
+  const result: number[] = new Array(data.length)
+  const before = Math.floor(window / 2)
+  const after = Math.ceil(window / 2)
   for (let i = 0; i < data.length; i++) {
-    const start = Math.max(0, i - Math.floor(window / 2))
-    const end = Math.min(data.length, i + Math.ceil(window / 2))
-    const slice = data.slice(start, end)
-    result.push(slice.reduce((a, b) => a + b, 0) / slice.length)
+    const start = Math.max(0, i - before)
+    const end = Math.min(data.length, i + after)
+    result[i] = (prefix[end] - prefix[start]) / (end - start)
   }
   return result
+}
+
+// ─── Specificity weight & comparison ──────────────────────────────
+type Spec = [number, number, number]
+
+/**
+ * Peso para el eje Y del gráfico. b y c se limitan a 9 para que no desborden
+ * a la siguiente columna: con a*100+b*10+c, (0,11,0)=110 quedaba por encima de
+ * un #id (1,0,0)=100. Así, cualquier selector con ID pesa ≥ 100 y ninguno sin
+ * ID llega a 100, coherente con la línea de referencia "ID (100+)".
+ */
+function specWeight([a, b, c]: Spec): number {
+  return a * 100 + Math.min(b, 9) * 10 + Math.min(c, 9)
+}
+
+/** Comparación lexicográfica real de especificidades (a, luego b, luego c). */
+function compareSpec(x: Spec, y: Spec): number {
+  return x[0] - y[0] || x[1] - y[1] || x[2] - y[2]
+}
+
+// Color based on specificity level (por tupla, no por peso)
+function getSpecificityColor([a, b, c]: Spec): string {
+  if (a >= 1) return COLORS.red                          // cualquier ID
+  if (b >= 3) return COLORS.yellow                       // 3+ clases/atributos/pseudo-clases
+  if (b === 2 || (b === 1 && c > 0)) return COLORS.green // clase compuesta
+  return COLORS.lightGreen1                              // solo tipo o una clase
+}
+
+// Máximo de puntos que se pasan a recharts: con decenas de miles de
+// selectores el SVG se volvía inmanejable.
+const MAX_GRAPH_POINTS = 1500
+
+/**
+ * Reduce la serie a ≤ `max` puntos agrupando en cubetas consecutivas y
+ * quedándose con el punto de MAYOR peso de cada una, para que los picos
+ * (lo importante en el Specificity Graph) sobrevivan al muestreo.
+ */
+function downsampleMax<T extends { weight: number }>(points: T[], max: number): T[] {
+  if (points.length <= max) return points
+  const bucketSize = points.length / max
+  const out: T[] = []
+  for (let b = 0; b < max; b++) {
+    const start = Math.floor(b * bucketSize)
+    const end = Math.min(points.length, Math.floor((b + 1) * bucketSize))
+    let best = points[start]
+    for (let i = start + 1; i < end; i++) {
+      if (points[i].weight > best.weight) best = points[i]
+    }
+    if (best) out.push(best)
+  }
+  return out
 }
 
 export function SpecificityTab({ result }: SpecificityTabProps) {
@@ -71,7 +126,7 @@ export function SpecificityTab({ result }: SpecificityTabProps) {
   const allEntries = useMemo(() =>
     result.specificityDistribution.map((entry, idx) => ({
       ...entry,
-      weight: entry.specificity[0] * 100 + entry.specificity[1] * 10 + entry.specificity[2],
+      weight: specWeight(entry.specificity),
       index: idx + 1,
     })),
     [result.specificityDistribution]
@@ -79,13 +134,14 @@ export function SpecificityTab({ result }: SpecificityTabProps) {
 
   // Top 20 highest specificity selectors
   const topSelectors = useMemo(() =>
-    [...allEntries].sort((a, b) => b.weight - a.weight).slice(0, 20),
+    [...allEntries].sort((a, b) => compareSpec(b.specificity, a.specificity)).slice(0, 20),
     [allEntries]
   )
 
   // ── Specificity Graph data (Harry Roberts) ──
-  // Uses ALL selectors in source order
-  const specificityGraphData = useMemo(() => {
+  // Uses ALL selectors in source order (la tendencia se calcula sobre todos;
+  // luego se submuestrea para el gráfico conservando los picos)
+  const fullGraphData = useMemo(() => {
     const weights = allEntries.map(e => e.weight)
     const trend = movingAverage(weights, Math.max(5, Math.floor(allEntries.length / 20)))
 
@@ -95,9 +151,16 @@ export function SpecificityTab({ result }: SpecificityTabProps) {
       trend: +trend[i].toFixed(1),
       selector: entry.selector,
       line: entry.line,
+      spec: entry.specificity,
       specificity: `${entry.specificity[0]},${entry.specificity[1]},${entry.specificity[2]}`,
     }))
   }, [allEntries])
+
+  const specificityGraphData = useMemo(
+    () => downsampleMax(fullGraphData, MAX_GRAPH_POINTS),
+    [fullGraphData]
+  )
+  const isDownsampled = specificityGraphData.length < fullGraphData.length
 
   const graphAssessment = useMemo(() => assessSpecificityGraph(allEntries), [allEntries])
 
@@ -111,14 +174,6 @@ export function SpecificityTab({ result }: SpecificityTabProps) {
     }
     return Object.entries(buckets).map(([name, count]) => ({ name, count }))
   }, [result.specificityDistribution])
-
-  // Color based on specificity level
-  const getSpecificityColor = (weight: number) => {
-    if (weight <= 10) return COLORS.lightGreen1
-    if (weight <= 30) return COLORS.green
-    if (weight <= 100) return COLORS.yellow
-    return COLORS.red
-  }
 
   return (
     <div className="space-y-6">
@@ -227,7 +282,7 @@ export function SpecificityTab({ result }: SpecificityTabProps) {
                         <div className="space-y-0.5 text-[#3d5a4a]">
                           <p>Linea: <span className="font-mono">{d.line}</span></p>
                           <p>Especificidad: <span className="font-mono">{d.specificity}</span></p>
-                          <p>Peso: <span className="font-semibold" style={{ color: getSpecificityColor(d.weight) }}>{d.weight}</span></p>
+                          <p>Peso: <span className="font-semibold" style={{ color: getSpecificityColor(d.spec) }}>{d.weight}</span></p>
                         </div>
                       </div>
                     )
@@ -285,6 +340,12 @@ export function SpecificityTab({ result }: SpecificityTabProps) {
               <span className="text-[10px] text-[#3d5a4a]">Umbral ID (100+)</span>
             </div>
           </div>
+          {isDownsampled && (
+            <p className="text-[10px] text-[#3d5a4a] text-center mt-1">
+              Mostrando {specificityGraphData.length.toLocaleString()} de {fullGraphData.length.toLocaleString()} selectores
+              (se conserva el pico de cada tramo; la tendencia usa todos).
+            </p>
+          )}
 
           {/* Explanation text */}
           <div className="mt-4 p-3 bg-[#f8f9fa] rounded-lg">
@@ -307,7 +368,7 @@ export function SpecificityTab({ result }: SpecificityTabProps) {
         </CardHeader>
         <CardContent>
           <ResponsiveContainer width="100%" height={300}>
-            <BarChart data={specificityGraphData.slice(0, 100)}>
+            <BarChart data={fullGraphData.slice(0, 100)}>
               <CartesianGrid strokeDasharray="3 3" stroke={COLORS.bg} />
               <XAxis
                 dataKey="index"
@@ -367,7 +428,7 @@ export function SpecificityTab({ result }: SpecificityTabProps) {
         <CardHeader>
           <div className="flex items-center gap-1.5">
             <CardTitle className="text-sm">Top 20 Selectores con Mayor Especificidad</CardTitle>
-            <InfoTooltip text="Los 20 selectores mas pesados de tu CSS. Estos son los principales candidatos a refactorizar si quieres reducir la especificidad." />
+            <InfoTooltip text="Los 20 selectores mas pesados de tu CSS. Estos son los principales candidatos a refactorizar si quieres reducir la especificidad. Se ordenan comparando (a,b,c) columna a columna; el peso es a·100 + b·10 + c con b y c limitados a 9, de modo que cualquier ID pesa 100 o más." />
           </div>
         </CardHeader>
         <CardContent>
@@ -397,7 +458,7 @@ export function SpecificityTab({ result }: SpecificityTabProps) {
                     <td className="text-center py-2 px-3">
                       <span
                         className="inline-block px-2 py-1 rounded text-xs font-semibold text-white"
-                        style={{ backgroundColor: getSpecificityColor(selector.weight) }}
+                        style={{ backgroundColor: getSpecificityColor(selector.specificity) }}
                       >
                         {selector.weight}
                       </span>

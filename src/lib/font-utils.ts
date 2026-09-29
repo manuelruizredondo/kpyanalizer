@@ -66,6 +66,10 @@ export const GENERIC_FAMILIES = new Set([
   "courier", "georgia", "verdana", "tahoma", "trebuchet ms",
   "palatino linotype", "palatino", "impact", "lucida console",
   "lucida sans unicode", "lucida grande", "segoe ui", "roboto",
+  // System font stack estándar (en minúsculas y sin comillas, como las
+  // compara classifyFamily)
+  "-apple-system", "blinkmacsystemfont", "helvetica neue",
+  "apple color emoji", "segoe ui emoji", "segoe ui symbol", "noto color emoji",
 ])
 
 export type FamilyTier = "ds" | "generic" | "eliminate"

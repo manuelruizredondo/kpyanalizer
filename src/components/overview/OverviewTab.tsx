@@ -14,7 +14,8 @@ import { InfoTooltip } from "@/components/ui/InfoTooltip"
 import { KpiTrendCard } from "@/components/charts/KpiTrendCard"
 import { C, CHART_COLORS, TT_STYLE } from "@/lib/colors"
 import { getScoreBand } from "@/lib/score-band"
-import { isApprovedWeight } from "@/lib/font-utils"
+import { isApprovedWeight, classifyFamily } from "@/lib/font-utils"
+import { classifySpacingGrid8 } from "@/components/hardcoded/HardcodedTab"
 import { computeHealthScoreBreakdown } from "@/lib/analyzer/health-score"
 import type { LucideIcon } from "lucide-react"
 
@@ -38,10 +39,10 @@ interface MiniMetricProps {
 }
 
 const SEV_STYLES = {
-  bad:     { border: "border-[#9e2b25]/20", iconColor: "#9e2b25", valueColor: "text-[#9e2b25]", dot: "bg-[#9e2b25]" },
-  warn:    { border: "border-[#a67c00]/20", iconColor: "#a67c00", valueColor: "text-[#a67c00]", dot: "bg-[#a67c00]" },
-  neutral: { border: "border-[#f0f2f1]",    iconColor: "#3d5a4a", valueColor: "text-[#1a2e23]", dot: "bg-[#3d5a4a]" },
-  good:    { border: "border-[#006c48]/20", iconColor: "#006c48", valueColor: "text-[#006c48]", dot: "bg-[#006c48]" },
+  bad:     { border: "border-[#9e2b25]/20", iconColor: "#9e2b25", valueColor: "text-[#9e2b25]", dot: "bg-[#9e2b25]", label: "Problema" },
+  warn:    { border: "border-[#a67c00]/20", iconColor: "#a67c00", valueColor: "text-[#a67c00]", dot: "bg-[#a67c00]", label: "Warning" },
+  neutral: { border: "border-[#f0f2f1]",    iconColor: "#3d5a4a", valueColor: "text-[#1a2e23]", dot: "bg-[#3d5a4a]", label: "Neutro" },
+  good:    { border: "border-[#006c48]/20", iconColor: "#006c48", valueColor: "text-[#006c48]", dot: "bg-[#006c48]", label: "Bueno" },
 }
 
 function MiniMetric({ label, value, icon: Icon, severity, tooltip }: MiniMetricProps) {
@@ -58,7 +59,9 @@ function MiniMetric({ label, value, icon: Icon, severity, tooltip }: MiniMetricP
         </div>
         <p className={`text-lg font-bold leading-tight ${s.valueColor}`}>{typeof value === "number" ? value.toLocaleString() : value}</p>
       </div>
-      <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${s.dot}`} />
+      {/* La severidad no se transmite solo por color: texto para lectores de pantalla y tooltip */}
+      <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${s.dot}`} title={s.label} aria-hidden="true" />
+      <span className="sr-only">Estado: {s.label}</span>
     </div>
   )
 }
@@ -140,6 +143,11 @@ export function OverviewTab({ result, angularHistory, kpiHistory }: OverviewTabP
       .sort((a, b) => b.points - a.points)
   }, [result])
   const angularBreakdown = result.angularEncapsulationBreakdown ?? { host: 0, hostContext: 0, ngDeep: 0, deepCombinator: 0 }
+  const angularCount = result.angularEncapsulationCount ?? 0
+  const angularLocations = result.angularEncapsulationLocations ?? []
+  // La tarjeta se mantiene si hubo selectores Angular en escaneos anteriores,
+  // aunque ahora sean 0: así se ve la reducción conseguida.
+  const hasAngularHistory = angularHistory?.some(p => p.total > 0) ?? false
 
   // ── Build ordered metrics: bad → warn → neutral → good ──
   type Metric = MiniMetricProps & { sortOrder: number }
@@ -203,11 +211,14 @@ export function OverviewTab({ result, angularHistory, kpiHistory }: OverviewTabP
 
   // Charts
   const specificityData = getSpecificityBuckets(result)
+  // Todas las porciones en USOS (suma de .count), no en valores distintos
+  // (.length), para no mezclar magnitudes con !important, que son usos.
+  const sumCounts = (items: { count: number }[]) => items.reduce((acc, it) => acc + it.count, 0)
   const hardcodedData = [
-    { name: "Colores", value: result.colors.length },
-    { name: "Font sizes", value: result.fontSizes.length },
-    { name: "Spacing", value: result.spacingValues.length },
-    { name: "Z-index", value: result.zIndexValues.length },
+    { name: "Colores", value: sumCounts(result.colors) },
+    { name: "Font sizes", value: sumCounts(result.fontSizes) },
+    { name: "Spacing", value: sumCounts(result.spacingValues) },
+    { name: "Z-index", value: sumCounts(result.zIndexValues) },
     { name: "!important", value: result.importantCount },
   ].filter(d => d.value > 0)
 
@@ -238,11 +249,11 @@ export function OverviewTab({ result, angularHistory, kpiHistory }: OverviewTabP
   const spacingAnalysis = useMemo(() => {
     let grid8 = 0, nonGrid8 = 0, pctOther = 0
     for (const sv of result.spacingValues) {
-      const n = parseFloat(sv.normalized)
-      const isPx = /px$/i.test(sv.normalized) || sv.normalized === '0' || /^\d+$/.test(sv.normalized)
+      // Mismo criterio que la pestaña Hardcoded: se evalúan todos los
+      // componentes del valor ("16px 10px"), en valor absoluto
+      const { isPx, onGrid } = classifySpacingGrid8(sv.normalized)
       if (!isPx) { pctOther += sv.count; continue }
-      if (isNaN(n)) continue
-      if (n === 0 || n % 8 === 0) grid8 += sv.count
+      if (onGrid) grid8 += sv.count
       else nonGrid8 += sv.count
     }
     return [
@@ -254,21 +265,21 @@ export function OverviewTab({ result, angularHistory, kpiHistory }: OverviewTabP
 
   // ── Z-index depth layers ──
   const zLayerData = useMemo(() => {
+    const OVERFLOW = '≥10000'
     const layers: Record<string, number> = {}
     for (const z of result.zIndexValues) {
       const n = parseInt(z.value, 10)
       if (isNaN(n)) continue
-      const depth = n < 0 ? -1 : Math.min(Math.floor(n / 1000), 9)
-      const label = depth === -1 ? 'Negativos' : `${depth * 1000}-${depth * 1000 + 999}`
+      // Por encima de 9999 no se capa a la capa 9000 (99999 no es "9000-9999"):
+      // va a su propia capa "≥10000", fuera de la escala, como en Hardcoded.
+      const depth = n < 0 ? -1 : n >= 10000 ? 10 : Math.floor(n / 1000)
+      const label = depth === -1 ? 'Negativos' : depth === 10 ? OVERFLOW : `${depth * 1000}-${depth * 1000 + 999}`
       layers[label] = (layers[label] || 0) + z.count
     }
+    const order = (name: string) => name === 'Negativos' ? -1 : name === OVERFLOW ? 10000 : parseInt(name)
     return Object.entries(layers)
       .map(([name, value]) => ({ name, value }))
-      .sort((a, b) => {
-        const numA = a.name === 'Negativos' ? -1 : parseInt(a.name)
-        const numB = b.name === 'Negativos' ? -1 : parseInt(b.name)
-        return numA - numB
-      })
+      .sort((a, b) => order(a.name) - order(b.name))
   }, [result.zIndexValues])
 
   // ── Typography: font families ──
@@ -447,15 +458,19 @@ export function OverviewTab({ result, angularHistory, kpiHistory }: OverviewTabP
       {/* ══════════════════════════════════════════════════════════════
            ANGULAR ENCAPSULATION — breakdown + occurrences
          ══════════════════════════════════════════════════════════════ */}
-      {result.angularEncapsulationCount > 0 && (
+      {(angularCount > 0 || hasAngularHistory) && (
         <Card className="p-5">
           <div className="flex items-center justify-between mb-3">
             <div className="flex items-center gap-2">
-              <AlertTriangle size={16} className="text-[#9e2b25]" />
+              <AlertTriangle size={16} className={angularCount > 0 ? "text-[#9e2b25]" : "text-[#006c48]"} />
               <h4 className="text-sm font-semibold text-[#1a2e23]">Selectores Angular ViewEncapsulation</h4>
               <InfoTooltip text=":host, :host-context, ::ng-deep, /deep/ y >>>. Son selectores especificos de componentes Angular (ViewEncapsulation) y no deberian aparecer en un CSS global. Objetivo: 0." />
             </div>
-            <Badge className="bg-[#fef2f1] text-[#9e2b25]">{result.angularEncapsulationCount} total</Badge>
+            {angularCount > 0 ? (
+              <Badge className="bg-[#fef2f1] text-[#9e2b25]">{angularCount} total</Badge>
+            ) : (
+              <Badge className="bg-[#e0f5ec] text-[#006c48]">0 total · objetivo cumplido</Badge>
+            )}
           </div>
 
           {/* Breakdown chips */}
@@ -526,6 +541,7 @@ export function OverviewTab({ result, angularHistory, kpiHistory }: OverviewTabP
           )}
 
           {/* Occurrences table */}
+          {angularLocations.length > 0 && (
           <div className="border border-[#f0f2f1] rounded-lg overflow-hidden">
             <div className="grid grid-cols-[80px_120px_1fr] text-[10px] uppercase tracking-wider text-[#3d5a4a] bg-[#f9faf9] px-3 py-2 font-semibold">
               <span>Linea</span>
@@ -533,7 +549,7 @@ export function OverviewTab({ result, angularHistory, kpiHistory }: OverviewTabP
               <span>Selector</span>
             </div>
             <div className="max-h-[280px] overflow-y-auto divide-y divide-[#f0f2f1]">
-              {result.angularEncapsulationLocations.slice(0, 200).map((loc, i) => (
+              {angularLocations.slice(0, 200).map((loc, i) => (
                 <div key={i} className="grid grid-cols-[80px_120px_1fr] px-3 py-1.5 text-xs hover:bg-[#fef2f1]/40">
                   <span className="font-mono text-[#3d5a4a]">L{loc.line}:{loc.column}</span>
                   <span className="font-mono text-[#9e2b25]">
@@ -546,12 +562,13 @@ export function OverviewTab({ result, angularHistory, kpiHistory }: OverviewTabP
                 </div>
               ))}
             </div>
-            {result.angularEncapsulationLocations.length > 200 && (
+            {angularLocations.length > 200 && (
               <div className="px-3 py-2 text-[10px] text-[#3d5a4a] bg-[#f9faf9] border-t border-[#f0f2f1]">
-                Mostrando 200 de {result.angularEncapsulationLocations.length} ocurrencias.
+                Mostrando 200 de {angularLocations.length} ocurrencias.
               </div>
             )}
           </div>
+          )}
         </Card>
       )}
 
@@ -602,21 +619,21 @@ export function OverviewTab({ result, angularHistory, kpiHistory }: OverviewTabP
               title="Pseudo-elementos"
               tooltip="::before, ::after, ::placeholder, etc. (excluye ::ng-deep que se mide aparte)."
               color="#3d5a4a"
-              goal={undefined}
+              goal={null}
               data={kpiHistory.map(p => ({ date: p.date, value: p.pseudoElements }))}
             />
             <KpiTrendCard
               title="Media queries"
               tooltip="Breakpoints responsive. Demasiados distintos puede indicar falta de sistema."
               color="#3d5a4a"
-              goal={undefined}
+              goal={null}
               data={kpiHistory.map(p => ({ date: p.date, value: p.mediaQueries }))}
             />
             <KpiTrendCard
               title="Keyframes"
               tooltip="Animaciones @keyframes definidas."
               color="#3d5a4a"
-              goal={undefined}
+              goal={null}
               data={kpiHistory.map(p => ({ date: p.date, value: p.keyframes }))}
             />
           </div>
@@ -648,8 +665,8 @@ export function OverviewTab({ result, angularHistory, kpiHistory }: OverviewTabP
         {hardcodedData.length > 0 && (
           <Card className="p-5">
             <div className="flex items-center gap-1.5 mb-1">
-              <h4 className="text-sm font-semibold text-[#1a2e23]">Valores Hardcodeados</h4>
-              <InfoTooltip text="Valores escritos directamente en vez de usar variables CSS o tokens del Design System." />
+              <h4 className="text-sm font-semibold text-[#1a2e23]">Valores Hardcodeados (usos)</h4>
+              <InfoTooltip text="Numero de usos de valores escritos directamente en vez de usar variables CSS o tokens del Design System (cada aparicion cuenta, no solo los valores distintos)." />
             </div>
             <ResponsiveContainer width="100%" height={250}>
               <PieChart>
@@ -789,10 +806,9 @@ export function OverviewTab({ result, angularHistory, kpiHistory }: OverviewTabP
                 <Tooltip contentStyle={TT_STYLE} formatter={(val: any, _: any, props: any) => [val, props?.payload?.full || 'Usos']} />
                 <Bar dataKey="value" radius={[0, 4, 4, 0]} name="Usos">
                   {familyData.map((f, i) => {
-                    const lower = f.full.toLowerCase()
-                    const isSuisse = /suisse/.test(lower)
-                    const isGeneric = /^(sans-serif|serif|monospace|cursive|fantasy|system-ui|ui-serif|ui-sans-serif|ui-monospace|ui-rounded)$/.test(lower)
-                    return <Cell key={i} fill={isSuisse ? C.green : isGeneric ? C.green3 : C.red} />
+                    // Misma clasificación que la pestaña Tipografía
+                    const tier = classifyFamily(f.full)
+                    return <Cell key={i} fill={tier === "ds" ? C.green : tier === "generic" ? C.green3 : C.red} />
                   })}
                 </Bar>
               </BarChart>

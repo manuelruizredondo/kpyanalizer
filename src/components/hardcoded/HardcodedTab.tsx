@@ -10,6 +10,30 @@ import {
 import { AlertTriangle, CheckCircle, ArrowRight } from "lucide-react"
 
 const CHIP_LIMIT = 20
+// Filas de !important que se pintan de golpe; el resto bajo "Mostrar más"
+const IMPORTANT_PAGE = 200
+
+// ─── Grid de 8px (compartido con OverviewTab) ────────────────────
+// Número en px o sin unidad (el analizador ya excluye var(), calc() se
+// queda fuera por no encajar).
+const PX_TOKEN = /^-?(\d+\.?\d*|\.\d+)(px)?$/i
+
+/**
+ * Clasifica un valor de spacing normalizado frente a la grid de 8px. El valor
+ * puede ser un shorthand ("16px 10px"): se evalúa CADA número, no solo el
+ * primero. `auto` no cuenta; los negativos se evalúan en valor absoluto
+ * (-16px está en grid) y 0 siempre está en grid.
+ * - isPx:   todos los componentes son px/unitless (o auto)
+ * - onGrid: todos los componentes en px son múltiplos de 8
+ */
+export function classifySpacingGrid8(normalized: string): { isPx: boolean; onGrid: boolean } {
+  const tokens = normalized.trim().split(/\s+/).filter(t => t && t !== "auto")
+  if (tokens.length === 0 || !tokens.every(t => PX_TOKEN.test(t))) {
+    return { isPx: false, onGrid: false }
+  }
+  const onGrid = tokens.every(t => Math.abs(parseFloat(t)) % 8 === 0)
+  return { isPx: true, onGrid }
+}
 
 function ExpandableChips({ items, renderChip, limit = CHIP_LIMIT }: {
   items: HardcodedValue[]
@@ -256,6 +280,7 @@ function ZIndexSection({ items, total }: { items: HardcodedValue[]; total: numbe
 }
 
 export function HardcodedTab({ result, dsCoverage, dsTokens }: HardcodedTabProps) {
+  const [importantLimit, setImportantLimit] = useState(IMPORTANT_PAGE)
   const sortedColors = [...result.colors].sort((a, b) => b.count - a.count)
   const sortedFontSizes = [...result.fontSizes].sort((a, b) => b.count - a.count)
   const sortedSpacing = [...result.spacingValues].sort((a, b) => b.count - a.count)
@@ -369,19 +394,15 @@ export function HardcodedTab({ result, dsCoverage, dsTokens }: HardcodedTabProps
       {/* ── Spacing ── */}
       {(() => {
         // Classify spacing by unit type
-        const isPx = (val: string) => /px$/i.test(val) || val === '0' || /^\d+$/.test(val)
+        const isPx = (val: string) => classifySpacingGrid8(val).isPx
         const isPercent = (val: string) => /%$/.test(val) || /v[wh]$/i.test(val) || /sv[wh]$/i.test(val) || /dv[wh]$/i.test(val)
 
         const pxValues = sortedSpacing.filter(sv => isPx(sv.normalized))
         const percentValues = sortedSpacing.filter(sv => isPercent(sv.normalized))
         const otherValues = sortedSpacing.filter(sv => !isPx(sv.normalized) && !isPercent(sv.normalized))
 
-        // Within px: split multiples of 8 vs not
-        const isMultipleOf8 = (val: string): boolean => {
-          const num = parseFloat(val)
-          if (isNaN(num)) return false
-          return num === 0 || (num > 0 && num % 8 === 0)
-        }
+        // Within px: split multiples of 8 vs not (todos los componentes del valor)
+        const isMultipleOf8 = (val: string): boolean => classifySpacingGrid8(val).onGrid
         const pxBad = pxValues.filter(sv => !isMultipleOf8(sv.normalized))
         const pxOk = pxValues.filter(sv => isMultipleOf8(sv.normalized))
 
@@ -525,7 +546,7 @@ export function HardcodedTab({ result, dsCoverage, dsTokens }: HardcodedTabProps
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {result.importants.map((imp, i) => (
+                  {result.importants.slice(0, importantLimit).map((imp, i) => (
                     <TableRow key={i}>
                       <TableCell className="font-mono text-[10px] text-[#3d5a4a] py-1.5">L{imp.line}</TableCell>
                       <TableCell className="font-mono text-[10px] text-[#1a2e23] py-1.5 truncate max-w-[200px]">{imp.selector}</TableCell>
@@ -535,6 +556,17 @@ export function HardcodedTab({ result, dsCoverage, dsTokens }: HardcodedTabProps
                 </TableBody>
               </Table>
             </div>
+            {result.importants.length > importantLimit && (
+              <div className="flex items-center justify-between gap-3 px-3 py-2 text-[10px] text-[#3d5a4a] bg-[#f9faf9] border-t border-[#f0f2f1]">
+                <span>Mostrando {importantLimit.toLocaleString()} de {result.importants.length.toLocaleString()} declaraciones.</span>
+                <button
+                  onClick={() => setImportantLimit(l => l + IMPORTANT_PAGE)}
+                  className="text-xs font-medium text-[#006c48] hover:text-[#004d33] px-2.5 py-1 rounded-lg hover:bg-[#e0f5ec] transition-colors cursor-pointer"
+                >
+                  Mostrar más
+                </button>
+              </div>
+            )}
           </div>
         )}
       </Card>

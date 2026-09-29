@@ -76,22 +76,40 @@ function normalizeColor(value: string): string {
   return v
 }
 
-function groupValues(items: { value: string; normalized: string; location: LocationReference }[]): HardcodedValue[] {
-  const map = new Map<string, { value: string; locations: LocationReference[] }>()
+/**
+ * Agrupa por valor normalizado. Con `withVariants` conserva además cada grafía
+ * original distinta con su número de usos (p.ej. "bold" y "700" → 700), que
+ * `value` por sí solo pierde al quedarse con la primera.
+ */
+function groupValues(
+  items: { value: string; normalized: string; location: LocationReference }[],
+  withVariants = false,
+): HardcodedValue[] {
+  const map = new Map<string, { value: string; locations: LocationReference[]; variants: Map<string, number> }>()
   for (const item of items) {
     const existing = map.get(item.normalized)
     if (existing) {
       existing.locations.push(item.location)
+      if (withVariants) existing.variants.set(item.value, (existing.variants.get(item.value) ?? 0) + 1)
     } else {
-      map.set(item.normalized, { value: item.value, locations: [item.location] })
+      const variants = new Map<string, number>()
+      if (withVariants) variants.set(item.value, 1)
+      map.set(item.normalized, { value: item.value, locations: [item.location], variants })
     }
   }
-  return Array.from(map.entries()).map(([normalized, data]) => ({
-    value: data.value,
-    normalized,
-    count: data.locations.length,
-    locations: data.locations,
-  })).sort((a, b) => b.count - a.count)
+  return Array.from(map.entries()).map(([normalized, data]) => {
+    const grouped: HardcodedValue = {
+      value: data.value,
+      normalized,
+      count: data.locations.length,
+      locations: data.locations,
+    }
+    if (withVariants) {
+      grouped.variants = Array.from(data.variants, ([value, count]) => ({ value, count }))
+        .sort((a, b) => b.count - a.count)
+    }
+    return grouped
+  }).sort((a, b) => b.count - a.count)
 }
 
 export interface HardcodedResults {
@@ -252,7 +270,9 @@ export function extractHardcoded(ast: CssNode): HardcodedResults {
     fontSizes: groupValues(rawFontSizes),
     spacingValues: groupValues(rawSpacing),
     zIndexValues: groupValues(rawZIndex),
-    fontWeights: groupValues(rawFontWeights),
+    // Los pesos agrupan keywords y números ("bold" = 700): se guardan las
+    // variantes para que la tipografía pueda proponer unificarlas.
+    fontWeights: groupValues(rawFontWeights, true),
     fontFamilies: groupValues(rawFontFamilies),
     importants,
   }

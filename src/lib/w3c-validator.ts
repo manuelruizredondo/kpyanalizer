@@ -1,20 +1,21 @@
 import type { W3cValidationResult, W3cIssue } from "@/types/w3c"
+import { edgeFunctionUrl, edgeFunctionHeaders } from "@/lib/edge-functions"
 
-const W3C_PROXY = "https://lqgdrkwabcjrnnthlrmi.supabase.co/functions/v1/w3c-validator"
-
+/**
+ * Envía el CSS completo a nuestra Edge Function `w3c-validator`, que lo reenvía
+ * al servicio de validación del W3C (jigsaw.w3.org).
+ */
 export async function validateCssW3c(css: string): Promise<W3cValidationResult> {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 30000)
 
   try {
-    const response = await fetch(W3C_PROXY, {
+    const response = await fetch(edgeFunctionUrl("w3c-validator"), {
       method: "POST",
       signal: controller.signal,
-      headers: { "Content-Type": "application/json" },
+      headers: { ...(await edgeFunctionHeaders()), "Content-Type": "application/json" },
       body: JSON.stringify({ css }),
     })
-
-    clearTimeout(timeout)
 
     if (!response.ok) {
       const errBody = await response.text().catch(() => "")
@@ -24,11 +25,13 @@ export async function validateCssW3c(css: string): Promise<W3cValidationResult> 
     const data = await response.json()
     return parseW3cResponse(data)
   } catch (err) {
-    clearTimeout(timeout)
     if (err instanceof DOMException && err.name === "AbortError") {
       throw new Error("La validacion W3C tardo demasiado (timeout 30s). Intenta con un CSS mas pequeno.")
     }
     throw err
+  } finally {
+    // El timeout cubre también la lectura del cuerpo
+    clearTimeout(timeout)
   }
 }
 

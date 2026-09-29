@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent } from "@/components/ui/card"
@@ -15,7 +16,22 @@ interface W3cTabProps {
   onModeChange: (mode: ValidationMode) => void
 }
 
+// Incidencias que se pintan de golpe; el resto bajo "Mostrar más" (un CSS
+// grande puede generar miles de errores/warnings, una Card por cada uno).
+const ISSUE_PAGE = 200
+
 export function W3cTab({ result, isValidating, error, onValidate, hasCss, mode, onModeChange }: W3cTabProps) {
+  const [errorLimit, setErrorLimit] = useState(ISSUE_PAGE)
+  const [warningLimit, setWarningLimit] = useState(ISSUE_PAGE)
+  // Nuevo resultado → volver a la primera página
+  useEffect(() => {
+    setErrorLimit(ISSUE_PAGE)
+    setWarningLimit(ISSUE_PAGE)
+  }, [result])
+
+  // Modo que produjo el resultado (los resultados antiguos no lo traen)
+  const resultMode = result?.mode ?? mode
+
   return (
     <div className="space-y-6">
       {/* Header with mode switch */}
@@ -26,8 +42,14 @@ export function W3cTab({ result, isValidating, error, onValidate, hasCss, mode, 
         </div>
         <div className="flex items-center gap-2">
           {/* Mode toggle */}
-          <div className="flex rounded-lg border border-[#f0f2f1] overflow-hidden text-xs">
+          <div
+            className="flex rounded-lg border border-[#f0f2f1] overflow-hidden text-xs"
+            role="group"
+            aria-label="Modo de validacion"
+          >
             <button
+              type="button"
+              aria-pressed={mode === "local"}
               onClick={() => onModeChange("local")}
               className={`px-3 py-1.5 transition-colors ${
                 mode === "local"
@@ -38,6 +60,8 @@ export function W3cTab({ result, isValidating, error, onValidate, hasCss, mode, 
               Local
             </button>
             <button
+              type="button"
+              aria-pressed={mode === "w3c"}
               onClick={() => onModeChange("w3c")}
               className={`px-3 py-1.5 transition-colors ${
                 mode === "w3c"
@@ -76,6 +100,9 @@ export function W3cTab({ result, isValidating, error, onValidate, hasCss, mode, 
                 Instantaneo, sin conexion a internet. Detecta errores de sintaxis, propiedades desconocidas,
                 valores invalidos, reglas vacias, propiedades duplicadas y uso de !important.
               </p>
+              <p className="text-xs text-[#006c48] mt-1">
+                Tu CSS se valida en el navegador y nunca sale de tu equipo.
+              </p>
             </div>
           </>
         ) : (
@@ -86,6 +113,11 @@ export function W3cTab({ result, isValidating, error, onValidate, hasCss, mode, 
               <p className="text-xs text-[#3d5a4a]">
                 Validador oficial del W3C. Requiere conexion a internet. Puede fallar con CSS muy grandes
                 o si el servidor del W3C no esta disponible.
+              </p>
+              <p className="text-xs text-[#a67c00] mt-1">
+                <strong>Privacidad:</strong> el CSS completo se envia a traves de nuestro servidor al servicio
+                de validacion del W3C (jigsaw.w3.org), un tercero. Si el CSS es confidencial, usa el modo Local,
+                que nunca sale del navegador.
               </p>
             </div>
           </>
@@ -144,7 +176,7 @@ export function W3cTab({ result, isValidating, error, onValidate, hasCss, mode, 
               {result.warningCount} warnings
             </Badge>
             <Badge variant="outline" className="text-[#3d5a4a]">
-              {mode === "local" ? "Local" : "W3C"}
+              {resultMode === "local" ? "Local" : "W3C"}
             </Badge>
           </div>
 
@@ -156,7 +188,7 @@ export function W3cTab({ result, isValidating, error, onValidate, hasCss, mode, 
                 Errores ({result.errors.length})
               </h4>
               <div className="space-y-2">
-                {result.errors.map((err, i) => (
+                {result.errors.slice(0, errorLimit).map((err, i) => (
                   <Card key={i} className="border-[#9e2b25]/20">
                     <CardContent className="p-3">
                       <div className="flex items-start gap-2">
@@ -177,6 +209,12 @@ export function W3cTab({ result, isValidating, error, onValidate, hasCss, mode, 
                   </Card>
                 ))}
               </div>
+              <ShowMoreIssues
+                shown={Math.min(errorLimit, result.errors.length)}
+                total={result.errors.length}
+                label="errores"
+                onMore={() => setErrorLimit(l => l + ISSUE_PAGE)}
+              />
             </section>
           )}
 
@@ -188,7 +226,7 @@ export function W3cTab({ result, isValidating, error, onValidate, hasCss, mode, 
                 Warnings ({result.warnings.length})
               </h4>
               <div className="space-y-2">
-                {result.warnings.map((warn, i) => (
+                {result.warnings.slice(0, warningLimit).map((warn, i) => (
                   <Card key={i} className="border-[#a67c00]/20">
                     <CardContent className="p-3">
                       <div className="flex items-start gap-2">
@@ -211,10 +249,35 @@ export function W3cTab({ result, isValidating, error, onValidate, hasCss, mode, 
                   </Card>
                 ))}
               </div>
+              <ShowMoreIssues
+                shown={Math.min(warningLimit, result.warnings.length)}
+                total={result.warnings.length}
+                label="warnings"
+                onMore={() => setWarningLimit(l => l + ISSUE_PAGE)}
+              />
             </section>
           )}
         </div>
       )}
+    </div>
+  )
+}
+
+function ShowMoreIssues({ shown, total, label, onMore }: {
+  shown: number
+  total: number
+  label: string
+  onMore: () => void
+}) {
+  if (total <= shown) return null
+  return (
+    <div className="flex items-center justify-between gap-3 mt-2">
+      <p className="text-xs text-[#3d5a4a]">
+        Mostrando {shown.toLocaleString()} de {total.toLocaleString()} {label}.
+      </p>
+      <Button size="sm" variant="outline" className="h-7 text-xs" onClick={onMore}>
+        Mostrar más
+      </Button>
     </div>
   )
 }

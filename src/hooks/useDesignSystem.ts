@@ -1,6 +1,7 @@
-import { useState, useCallback } from "react"
+import { useState, useCallback, useRef } from "react"
 import { parseDsTokens } from "@/lib/ds-token-parser"
 import { compareDsTokens } from "@/lib/ds-comparator"
+import { fetchViaCorsProxy, parseHttpUrl } from "@/lib/edge-functions"
 import type { DsTokenSet, DsCoverageResult } from "@/types/design-system"
 import type { AnalysisResult } from "@/types/analysis"
 
@@ -10,15 +11,18 @@ export function useDesignSystem() {
   const [error, setError] = useState<string | null>(null)
   const [fileName, setFileName] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
-  const [rawCss, setRawCss] = useState<string | null>(null)
+  // Solo la carga más reciente puede escribir estado (otra URL o un fichero
+  // soltado mientras tanto invalidan la anterior).
+  const loadIdRef = useRef(0)
 
   const loadTokens = useCallback((content: string, name: string) => {
+    loadIdRef.current++
+    setLoading(false)
     setError(null)
     try {
       const parsed = parseDsTokens(content, name)
       setTokens(parsed)
       setFileName(name)
-      setRawCss(name.endsWith('.css') ? content : null)
       return parsed
     } catch (e) {
       setError(e instanceof Error ? e.message : "Error al parsear tokens DS")
@@ -27,24 +31,24 @@ export function useDesignSystem() {
   }, [])
 
   const loadFromUrl = useCallback(async (url: string) => {
+    const id = ++loadIdRef.current
     setError(null)
     setLoading(true)
     try {
-      const proxyUrl = `https://lqgdrkwabcjrnnthlrmi.supabase.co/functions/v1/cors-proxy?url=${encodeURIComponent(url)}`
-      const resp = await fetch(proxyUrl)
+      const resp = await fetchViaCorsProxy(url)
       if (!resp.ok) throw new Error(`Error ${resp.status}: ${resp.statusText}`)
       const content = await resp.text()
-      const name = url.split('/').pop() || 'framework.css'
+      if (id !== loadIdRef.current) return null
+      const name = parseHttpUrl(url)?.pathname.split('/').pop() || 'framework.css'
       const parsed = parseDsTokens(content, name)
       setTokens(parsed)
       setFileName(name)
-      setRawCss(name.endsWith('.css') ? content : null)
-      setLoading(false)
       return parsed
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Error al cargar la URL")
-      setLoading(false)
+      if (id === loadIdRef.current) setError(e instanceof Error ? e.message : "Error al cargar la URL")
       return null
+    } finally {
+      if (id === loadIdRef.current) setLoading(false)
     }
   }, [])
 
@@ -61,12 +65,13 @@ export function useDesignSystem() {
   }, [])
 
   const reset = useCallback(() => {
+    loadIdRef.current++
     setTokens(null)
     setCoverage(null)
     setError(null)
     setFileName(null)
-    setRawCss(null)
+    setLoading(false)
   }, [])
 
-  return { tokens, coverage, error, fileName, loading, rawCss, loadTokens, loadFromUrl, compare, reset }
+  return { tokens, coverage, error, fileName, loading, loadTokens, loadFromUrl, compare, reset }
 }

@@ -1,48 +1,58 @@
 import { useState, useCallback, useEffect, useRef } from "react"
 import { analyzeCss } from "@/lib/analyzer"
 import type { AnalysisResult } from "@/types/analysis"
+import { LAST_CSS_STORAGE_KEY } from "@/lib/storage-keys"
 
-const STORAGE_KEY = "kpy_last_css"
 const DEBOUNCE_MS = 500
+
+function persistCss(css: string) {
+  try {
+    if (css) {
+      sessionStorage.setItem(LAST_CSS_STORAGE_KEY, css)
+    } else {
+      sessionStorage.removeItem(LAST_CSS_STORAGE_KEY)
+    }
+  } catch { /* ignore quota errors */ }
+}
 
 export function useAnalysis() {
   const [css, setCss] = useState(() => {
     try {
-      return sessionStorage.getItem(STORAGE_KEY) || ""
+      return sessionStorage.getItem(LAST_CSS_STORAGE_KEY) || ""
     } catch {
       return ""
     }
   })
   const [result, setResult] = useState<AnalysisResult | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [isAnalyzing, setIsAnalyzing] = useState(false)
+  const [isAnalyzing, setIsAnalyzing] = useState(() => css.trim() !== "")
   const hasRestoredRef = useRef(false)
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined)
   const analysisIdRef = useRef(0)
 
-  // Re-analyze restored CSS on mount
+  // Re-analiza el CSS restaurado al montar. Se difiere un tick para que la
+  // página pinte antes de que analyzeCss (síncrono) ocupe el hilo.
   useEffect(() => {
-    if (!hasRestoredRef.current && css.trim()) {
-      hasRestoredRef.current = true
+    if (hasRestoredRef.current || !css.trim()) return
+    hasRestoredRef.current = true
+    const thisId = ++analysisIdRef.current
+    const t = setTimeout(() => {
+      if (thisId !== analysisIdRef.current) return
       try {
-        const r = analyzeCss(css)
-        setResult(r)
+        setResult(analyzeCss(css))
       } catch (e) {
         setError(e instanceof Error ? e.message : "Error al restaurar el análisis")
+      } finally {
+        setIsAnalyzing(false)
       }
+    }, 0)
+    return () => {
+      clearTimeout(t)
+      // En StrictMode el efecto se monta dos veces: permite reintentar.
+      hasRestoredRef.current = false
     }
+    // Solo al montar: `css` es el valor restaurado de sessionStorage.
   }, [])
-
-  // Persist CSS to sessionStorage
-  useEffect(() => {
-    try {
-      if (css) {
-        sessionStorage.setItem(STORAGE_KEY, css)
-      } else {
-        sessionStorage.removeItem(STORAGE_KEY)
-      }
-    } catch { /* ignore quota errors */ }
-  }, [css])
 
   // Cleanup debounce on unmount
   useEffect(() => {
@@ -54,6 +64,9 @@ export function useAnalysis() {
   const analyze = useCallback((cssText: string) => {
     setCss(cssText)
     if (!cssText.trim()) {
+      if (debounceRef.current) clearTimeout(debounceRef.current)
+      analysisIdRef.current++
+      persistCss("")
       setResult(null)
       setError(null)
       setIsAnalyzing(false)
@@ -68,6 +81,9 @@ export function useAnalysis() {
     const thisId = ++analysisIdRef.current
 
     debounceRef.current = setTimeout(() => {
+      // Persistir también con debounce: copiar MBs a sessionStorage en cada
+      // tecla es tan caro como el propio análisis.
+      persistCss(cssText)
       // Use requestIdleCallback if available, else requestAnimationFrame
       const scheduleAnalysis = (cb: () => void) => {
         if ('requestIdleCallback' in window) {

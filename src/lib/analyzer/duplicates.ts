@@ -14,6 +14,11 @@ export interface DuplicateResults {
 // Selectors to exclude from duplicate detection (common structural selectors)
 const IGNORED_SELECTORS = new Set([':root', '*', 'html', 'body'])
 
+// At-rules condicionales: un mismo selector dentro de contextos distintos (p. ej.
+// `.btn` suelto y `.btn` en `@media (max-width: 768px)`) es el patrón normal
+// de un CSS responsive, no un duplicado. El selector se agrupa por contexto.
+const SCOPING_ATRULES = new Set(['media', 'supports', 'container', 'layer', 'scope', 'document', 'starting-style'])
+
 export function extractDuplicates(ast: CssNode): DuplicateResults {
   const selectorMap = new Map<string, { line: number; column: number; selector: string }[]>()
   const declarationMap = new Map<string, { line: number; column: number; selector: string; property: string }[]>()
@@ -28,6 +33,8 @@ export function extractDuplicates(ast: CssNode): DuplicateResults {
   // (antes se re-recorría el subárbol por cada nodo → O(n²) y colgaba con CSS
   // grandes). Cuenta reglas y at-rules anidadas, igual que antes.
   let currentDepth = 0
+  // Pila de contextos condicionales activos, p. ej. ["@media (max-width: 768px)"].
+  const scopeStack: string[] = []
 
   csstree.walk(ast, {
     enter(node: import("css-tree").CssNode) {
@@ -42,6 +49,12 @@ export function extractDuplicates(ast: CssNode): DuplicateResults {
         if (name === "keyframes" || name === "-webkit-keyframes") {
           insideKeyframes = true
         }
+        if (SCOPING_ATRULES.has(name) && node.block) {
+          const prelude = node.prelude
+            ? " " + csstree.generate(node.prelude).replace(/\s+/g, " ").trim()
+            : ""
+          scopeStack.push(`@${name}${prelude}`)
+        }
       }
 
       if (node.type === "Rule" && node.prelude) {
@@ -51,12 +64,17 @@ export function extractDuplicates(ast: CssNode): DuplicateResults {
         if (!insideKeyframes && !IGNORED_SELECTORS.has(currentSelector)) {
           const line = node.loc?.start?.line ?? 0
           const column = node.loc?.start?.column ?? 0
+          // La clave incluye el contexto, así que el grupo resultante muestra
+          // dónde se repite: "@media (max-width: 768px) › .btn".
+          const key = scopeStack.length > 0
+            ? `${scopeStack.join(" › ")} › ${currentSelector}`
+            : currentSelector
 
-          const existing = selectorMap.get(currentSelector)
+          const existing = selectorMap.get(key)
           if (existing) {
             existing.push({ line, column, selector: currentSelector })
           } else {
-            selectorMap.set(currentSelector, [{ line, column, selector: currentSelector }])
+            selectorMap.set(key, [{ line, column, selector: currentSelector }])
           }
         }
       }
@@ -110,6 +128,9 @@ export function extractDuplicates(ast: CssNode): DuplicateResults {
         const name = node.name.toLowerCase()
         if (name === "keyframes" || name === "-webkit-keyframes") {
           insideKeyframes = false
+        }
+        if (SCOPING_ATRULES.has(name) && node.block) {
+          scopeStack.pop()
         }
       }
     },

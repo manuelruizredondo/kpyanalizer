@@ -1,9 +1,31 @@
-import { useState } from "react"
+import { useMemo, useState } from "react"
 import { FileDropZone } from "./FileDropZone"
 import { Button } from "@/components/ui/button"
 import { FileCode, Trash2, Loader2, Globe, Download } from "lucide-react"
+import { fetchViaCorsProxy, parseHttpUrl } from "@/lib/edge-functions"
 
-const CORS_PROXY = "https://lqgdrkwabcjrnnthlrmi.supabase.co/functions/v1/cors-proxy"
+/** Tamaño UTF-8 en bytes sin copiar el texto (equivale a new Blob([text]).size). */
+function utf8ByteLength(text: string): number {
+  let bytes = 0
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i)
+    if (code < 0x80) bytes += 1
+    else if (code < 0x800) bytes += 2
+    else if (code >= 0xd800 && code <= 0xdbff && i + 1 < text.length) {
+      const next = text.charCodeAt(i + 1)
+      if (next >= 0xdc00 && next <= 0xdfff) { bytes += 4; i++ } else bytes += 3
+    } else bytes += 3
+  }
+  return bytes
+}
+
+/** Nº de líneas sin crear un array con split() sobre todo el CSS. */
+function countLines(text: string): number {
+  if (!text) return 0
+  let n = 1
+  for (let i = text.indexOf("\n"); i !== -1; i = text.indexOf("\n", i + 1)) n++
+  return n
+}
 
 interface CssInputProps {
   value: string
@@ -17,6 +39,8 @@ export function CssInput({ value, onChange, isAnalyzing }: CssInputProps) {
   const [urlLoading, setUrlLoading] = useState(false)
   const [urlError, setUrlError] = useState<string | null>(null)
   const [urlBlocked, setUrlBlocked] = useState(false)
+  // Aviso de la zona de arrastre (p.ej. varios archivos soltados)
+  const [fileNotice, setFileNotice] = useState<string | null>(null)
 
   function handleTextChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
     const text = e.target.value
@@ -34,17 +58,22 @@ export function CssInput({ value, onChange, isAnalyzing }: CssInputProps) {
     onChange("")
     setUrlInput("")
     setUrlError(null)
+    setFileNotice(null)
   }
 
   async function handleLoadFromUrl() {
     const url = urlInput.trim()
     if (!url) return
 
-    // Basic URL validation
+    // Basic URL validation (solo http/https: nada de javascript:, data:, file:…)
     try {
       new URL(url)
     } catch {
       setUrlError("URL no valida. Asegurate de incluir https://")
+      return
+    }
+    if (!parseHttpUrl(url)) {
+      setUrlError("Solo se admiten URLs http:// o https://")
       return
     }
 
@@ -61,29 +90,25 @@ export function CssInput({ value, onChange, isAnalyzing }: CssInputProps) {
     setUrlBlocked(false)
 
     try {
-      const proxyUrl = `${CORS_PROXY}?url=${encodeURIComponent(url)}`
-      const controller = new AbortController()
-      const timeout = setTimeout(() => controller.abort(), 30000)
-
-      const resp = await fetch(proxyUrl, { signal: controller.signal })
-      clearTimeout(timeout)
+      // El helper valida el esquema, envía las cabeceras de auth y aplica un
+      // timeout que cubre también la descarga del cuerpo.
+      const resp = await fetchViaCorsProxy(url, { timeoutMs: 30000 })
 
       if (!resp.ok) {
-        // Check if the proxy returned a "blocked" flag
-        let blocked = false
+        // Check if the proxy returned a "blocked" flag. El JSON se parsea
+        // aparte para no tragarse el mensaje real del proxy.
+        let json: { blocked?: boolean; error?: string } | null = null
         try {
-          const json = await resp.json()
-          blocked = json.blocked === true
-          if (blocked) {
-            setUrlBlocked(true)
-            setUrlError(json.error || `El servidor bloquea descargas externas (${resp.status})`)
-            return
-          }
-          throw new Error(json.error || `Error ${resp.status}`)
-        } catch (jsonErr) {
-          if (blocked) return
-          throw new Error(`Error ${resp.status}: no se pudo descargar el CSS`)
+          json = await resp.json()
+        } catch {
+          json = null
         }
+        if (json?.blocked === true) {
+          setUrlBlocked(true)
+          setUrlError(json.error || `El servidor bloquea descargas externas (${resp.status})`)
+          return
+        }
+        throw new Error(json?.error || `Error ${resp.status}: no se pudo descargar el CSS`)
       }
 
       const css = await resp.text()
@@ -92,8 +117,16 @@ export function CssInput({ value, onChange, isAnalyzing }: CssInputProps) {
         throw new Error("El archivo descargado esta vacio")
       }
 
-      // Check it looks like CSS (basic heuristic)
-      if (css.trim().startsWith("<!DOCTYPE") || css.trim().startsWith("<html")) {
+      // Check it looks like CSS (basic heuristic): cabecera HTML (sin distinguir
+      // mayúsculas) o content-type text/html con un cuerpo que empieza por "<"
+      // (un CSS nunca empieza así; no nos fiamos solo del content-type del proxy).
+      const contentType = (resp.headers.get("content-type") || "").toLowerCase()
+      const head = css.trimStart().slice(0, 100).toLowerCase()
+      if (
+        head.startsWith("<!doctype") ||
+        head.startsWith("<html") ||
+        (contentType.includes("text/html") && head.startsWith("<"))
+      ) {
         throw new Error("La URL devolvio HTML en lugar de CSS. Verifica la URL.")
       }
 
@@ -112,8 +145,14 @@ export function CssInput({ value, onChange, isAnalyzing }: CssInputProps) {
     }
   }
 
-  const size = localValue ? `${(new Blob([localValue]).size / 1024).toFixed(1)} KB` : "0 KB"
-  const lines = localValue ? localValue.split("\n").length : 0
+  // Se recalculan solo cuando cambia el texto (no en cada render)
+  const size = useMemo(
+    () => (localValue ? `${(utf8ByteLength(localValue) / 1024).toFixed(1)} KB` : "0 KB"),
+    [localValue],
+  )
+  const lines = useMemo(() => countLines(localValue), [localValue])
+  // URL para el enlace de descarga manual: solo http/https (nunca javascript:)
+  const safeBlockedUrl = urlBlocked ? parseHttpUrl(urlInput)?.href ?? null : null
 
   return (
     <div className="space-y-3">
@@ -133,8 +172,15 @@ export function CssInput({ value, onChange, isAnalyzing }: CssInputProps) {
             <>
               <span>{size}</span>
               <span>{lines.toLocaleString()} lineas</span>
-              <Button variant="ghost" size="sm" className="h-7 px-2" onClick={handleClear}>
-                <Trash2 className="h-3.5 w-3.5" />
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 px-2"
+                onClick={handleClear}
+                aria-label="Borrar CSS"
+                title="Borrar CSS"
+              >
+                <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
               </Button>
             </>
           )}
@@ -147,6 +193,7 @@ export function CssInput({ value, onChange, isAnalyzing }: CssInputProps) {
           <Globe className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[#3d5a4a]/50" />
           <input
             type="url"
+            aria-label="URL del archivo CSS"
             value={urlInput}
             onChange={(e) => { setUrlInput(e.target.value); setUrlError(null) }}
             onKeyDown={(e) => { if (e.key === "Enter") handleLoadFromUrl() }}
@@ -177,7 +224,7 @@ export function CssInput({ value, onChange, isAnalyzing }: CssInputProps) {
       {urlError && (
         <div className="text-xs bg-[#fef2f1] rounded-lg px-3 py-2 space-y-2">
           <p className="text-[#9e2b25]">{urlError}</p>
-          {urlBlocked && urlInput.trim() && (
+          {urlBlocked && safeBlockedUrl && (
             <div className="space-y-2 pt-1 border-t border-[#9e2b25]/10">
               <p className="text-[#3d5a4a]">
                 El servidor bloquea descargas desde servidores externos. Usa una de estas opciones:
@@ -185,11 +232,18 @@ export function CssInput({ value, onChange, isAnalyzing }: CssInputProps) {
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => {
+                    // Revalidar el esquema justo antes de usarlo (solo http/https)
+                    const safeUrl = parseHttpUrl(urlInput)
+                    if (!safeUrl) {
+                      setUrlError("Solo se admiten URLs http:// o https://")
+                      setUrlBlocked(false)
+                      return
+                    }
                     // Create a temporary link with download attribute to force .css download
                     const a = document.createElement("a")
-                    a.href = urlInput.trim()
+                    a.href = safeUrl.href
                     // Extract filename from URL
-                    const filename = urlInput.trim().split("/").pop()?.split("?")[0] || "styles.css"
+                    const filename = safeUrl.pathname.split("/").pop() || "styles.css"
                     a.download = filename
                     a.target = "_blank"
                     a.rel = "noopener noreferrer"
@@ -207,7 +261,7 @@ export function CssInput({ value, onChange, isAnalyzing }: CssInputProps) {
               <p className="text-[10px] text-[#3d5a4a]/70">
                 Si no se descarga, haz clic derecho en{" "}
                 <a
-                  href={urlInput.trim()}
+                  href={safeBlockedUrl}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="underline text-[#006c48]"
@@ -221,8 +275,11 @@ export function CssInput({ value, onChange, isAnalyzing }: CssInputProps) {
         </div>
       )}
 
+      {fileNotice && (
+        <p className="text-xs text-[#a67c00] bg-[#fef6e0] rounded-lg px-3 py-2" role="status">{fileNotice}</p>
+      )}
       {!localValue ? (
-        <FileDropZone onFileContent={handleFileDrop} accept=".css" className="min-h-[200px]">
+        <FileDropZone onFileContent={handleFileDrop} onNotice={setFileNotice} accept=".css" className="min-h-[200px]">
           <div className="flex flex-col items-center justify-center gap-2 p-8 text-[#3d5a4a]">
             <FileCode className="h-10 w-10" />
             <p className="text-sm font-medium">Arrastra tu archivo CSS aqui</p>
@@ -234,6 +291,7 @@ export function CssInput({ value, onChange, isAnalyzing }: CssInputProps) {
       <textarea
         className="w-full min-h-[150px] max-h-[400px] rounded-md border border-input bg-background px-3 py-2 text-xs font-mono ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         placeholder="Pega tu CSS compilado aqui..."
+        aria-label="CSS compilado"
         value={localValue}
         onChange={handleTextChange}
         spellCheck={false}

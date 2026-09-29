@@ -1,12 +1,13 @@
-import { useState, useEffect, useMemo } from 'react'
-import { getScanDetail } from '@/lib/scan-storage'
+import { useState, useEffect, useMemo, useRef, useId } from 'react'
+import type { ReactNode } from 'react'
+import { getScanDetail, isAbortError } from '@/lib/scan-storage'
 import type { ScanDetail } from '@/lib/scan-storage'
 import type { AnalysisResult } from '@/types/analysis'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { getScoreBand } from '@/lib/score-band'
-import { X, Copy, Download, ChevronDown, ChevronRight, Check } from 'lucide-react'
+import { X, Copy, Download, ChevronDown, ChevronRight, Check, Loader2 } from 'lucide-react'
 
 interface ScanDetailModalProps {
   scanId: string
@@ -19,24 +20,50 @@ export function ScanDetailModal({ scanId, onClose }: ScanDetailModalProps) {
   const [error, setError] = useState<string | null>(null)
   const [cssOpen, setCssOpen] = useState(false)
   const [copied, setCopied] = useState(false)
+  const titleId = useId()
+  const dialogRef = useRef<HTMLDivElement>(null)
+
+  // Ref al último onClose: el listener de Escape se registra una sola vez y
+  // no debe quedarse con un closure antiguo.
+  const onCloseRef = useRef(onClose)
+  useEffect(() => { onCloseRef.current = onClose })
 
   useEffect(() => {
-    const loadScanDetail = async () => {
-      try {
-        setLoading(true)
-        setError(null)
-        const detail = await getScanDetail(scanId)
-        setScan(detail)
-      } catch (err) {
-        setError('Error al cargar los detalles del escaneo')
+    // Cancela la descarga (varios MB) si el modal se cierra o cambia de escaneo
+    // antes de terminar, y descarta su resultado.
+    const controller = new AbortController()
+    setLoading(true)
+    setError(null)
+    setScan(null)
+    getScanDetail(scanId, controller.signal)
+      .then((detail) => {
+        if (!controller.signal.aborted) setScan(detail)
+      })
+      .catch((err) => {
+        if (controller.signal.aborted || isAbortError(err)) return
         console.error('Error loading scan detail:', err)
-      } finally {
-        setLoading(false)
-      }
-    }
-
-    loadScanDetail()
+        setError(err instanceof Error && err.message ? err.message : 'Error al cargar los detalles del escaneo')
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false)
+      })
+    return () => controller.abort()
   }, [scanId])
+
+  // Escape cierra en cualquier estado (también mientras carga). Al cerrar se
+  // devuelve el foco al elemento que abrió el modal.
+  useEffect(() => {
+    const previouslyFocused = document.activeElement as HTMLElement | null
+    dialogRef.current?.focus()
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onCloseRef.current()
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('keydown', onKeyDown)
+      previouslyFocused?.focus?.()
+    }
+  }, [])
 
   // The full CSS is stored in analysis_data.raw — pull it out for view/copy/download
   const rawCss = useMemo<string>(() => {
@@ -71,42 +98,64 @@ export function ScanDetailModal({ scanId, onClose }: ScanDetailModalProps) {
   }
 
 
+  // Contenedor común a todos los estados: un único nodo con role="dialog" que
+  // recibe el foco al abrir.
+  const renderDialog = (children: ReactNode, extraClass = '') => (
+    <div
+      ref={dialogRef}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby={titleId}
+      tabIndex={-1}
+      className={`fixed inset-0 bg-[#012d1d]/40 backdrop-blur-sm flex items-center justify-center z-50 focus:outline-none ${extraClass}`}
+    >
+      {children}
+    </div>
+  )
+
   if (loading) {
-    return (
-      <div className="fixed inset-0 bg-[#012d1d]/40 backdrop-blur-sm flex items-center justify-center z-50">
-        <Card className="w-96 p-6 rounded-2xl">
-          <p className="text-center text-[#3d5a4a]">Cargando...</p>
-        </Card>
-      </div>
+    return renderDialog(
+      <Card className="w-96 p-6 rounded-2xl relative">
+        <h2 id={titleId} className="sr-only">Detalle del escaneo</h2>
+        <button
+          onClick={onClose}
+          aria-label="Cerrar"
+          className="absolute top-3 right-3 p-1 rounded-lg text-[#3d5a4a] hover:text-[#1a2e23] hover:bg-[#f0f2f1]"
+        >
+          <X size={18} />
+        </button>
+        <p className="flex items-center justify-center gap-2 text-center text-[#3d5a4a]">
+          <Loader2 size={16} className="animate-spin text-[#006c48]" />
+          Cargando...
+        </p>
+      </Card>
     )
   }
 
   if (error || !scan) {
-    return (
-      <div className="fixed inset-0 bg-[#012d1d]/40 backdrop-blur-sm flex items-center justify-center z-50">
-        <Card className="w-96 p-6 rounded-2xl">
-          <p className="text-center text-[#9e2b25]">{error || 'Escaneo no encontrado'}</p>
-          <Button onClick={onClose} variant="outline" className="w-full mt-4">
-            Cerrar
-          </Button>
-        </Card>
-      </div>
+    return renderDialog(
+      <Card className="w-96 p-6 rounded-2xl">
+        <h2 id={titleId} className="sr-only">Detalle del escaneo</h2>
+        <p role="alert" className="text-center text-[#9e2b25]">{error || 'Escaneo no encontrado'}</p>
+        <Button onClick={onClose} variant="outline" className="w-full mt-4">
+          Cerrar
+        </Button>
+      </Card>
     )
   }
 
-  return (
-    <div className="fixed inset-0 bg-[#012d1d]/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+  return renderDialog(
       <Card className="w-full max-w-4xl max-h-[90vh] overflow-y-auto p-8 rounded-2xl">
         <div className="flex items-center justify-between mb-6">
           <div>
-            <h2 className="text-2xl font-bold text-[#1a2e23]">{scan.label}</h2>
+            <h2 id={titleId} className="text-2xl font-bold text-[#1a2e23]">{scan.label}</h2>
             <p className="text-sm text-[#3d5a4a] mt-1">
               {new Date(scan.created_at).toLocaleDateString('es-ES', {
                 year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit'
               })}
             </p>
           </div>
-          <button onClick={onClose} className="text-[#3d5a4a] hover:text-[#1a2e23]">
+          <button onClick={onClose} aria-label="Cerrar" className="text-[#3d5a4a] hover:text-[#1a2e23]">
             <X size={24} />
           </button>
         </div>
@@ -255,7 +304,7 @@ export function ScanDetailModal({ scanId, onClose }: ScanDetailModalProps) {
             Descargar JSON
           </Button>
         </div>
-      </Card>
-    </div>
+      </Card>,
+    'p-4',
   )
 }

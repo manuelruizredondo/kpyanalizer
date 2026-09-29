@@ -11,4 +11,6 @@ export interface W3cValidationResult {
   warningCount: number
   errors: W3cIssue[]
   warnings: W3cIssue[]
+  /** Modo que produjo ESTE resultado (no el seleccionado ahora en la UI). */
+  mode?: "local" | "w3c"
 }

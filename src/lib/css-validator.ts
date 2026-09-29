@@ -33,6 +33,24 @@ const FONT_FACE_DESCRIPTORS = new Set([
   "size-adjust",
 ])
 
+/**
+ * Descriptores propios de otras at-rules (no son propiedades CSS y el lexer
+ * los marcaría como "Propiedad desconocida"). Clave: nombre de la at-rule.
+ */
+const AT_RULE_DESCRIPTORS: Record<string, Set<string>> = {
+  "font-face": FONT_FACE_DESCRIPTORS,
+  property: new Set(["syntax", "inherits", "initial-value"]),
+  "counter-style": new Set([
+    "system", "symbols", "additive-symbols", "negative", "prefix", "suffix",
+    "range", "pad", "fallback", "speak-as",
+  ]),
+  page: new Set(["size", "marks", "bleed", "page-orientation"]),
+  "font-palette-values": new Set(["font-family", "base-palette", "override-colors"]),
+}
+
+/** Valor que usa una función/keyword con prefijo vendor (-webkit-linear-gradient(…), -webkit-box…) */
+const VENDOR_VALUE_RE = /(^|[\s,(])-(webkit|moz|ms|o)-/i
+
 interface ParseErrorInfo {
   message: string
   line: number
@@ -78,36 +96,58 @@ export function validateCssLocal(css: string): W3cValidationResult {
     }
   }
 
-  // Add parse errors
-  for (const pe of parseErrors) {
-    errors.push({
-      line: pe.line,
-      message: `Error de sintaxis: ${pe.message}`,
-      context: getLineContext(css, pe.line),
-      type: "parse-error",
-    })
+  // Add parse errors (el CSS se parte en líneas una sola vez, no por error)
+  if (parseErrors.length > 0) {
+    const lines = css.split("\n")
+    for (const pe of parseErrors) {
+      errors.push({
+        line: pe.line,
+        message: `Error de sintaxis: ${pe.message}`,
+        context: getLineContext(lines, pe.line),
+        type: "parse-error",
+      })
+    }
   }
 
   // ── Phase 2: Lexer validation (property + value checking) ──
   const lexer = csstree.lexer
   let currentSelector = ""
   let firstRuleSeen = false
-  let insideFontFace = false
   // Helpers utility (.p-0\!, .mb-0\!, etc.) tienen !important deliberado
   // — no se emite warning sobre ellos.
   let inHelperRule = false
+  // Pila de contextos (reglas y at-rules): al entrar en una at-rule como
+  // @font-face/@page se resetean selector y helper (antes arrastraban los de
+  // la regla anterior) y al salir se restaura el contexto exterior.
+  interface Ctx { selector: string; helper: boolean; atrule: string | null }
+  const ctxStack: Ctx[] = []
+  const restoreCtx = () => {
+    const top = ctxStack[ctxStack.length - 1]
+    currentSelector = top?.selector ?? ""
+    inHelperRule = top?.helper ?? false
+  }
 
   csstree.walk(ast, {
     enter(node: import("css-tree").CssNode) {
-      // Track @font-face context
-      if (node.type === "Atrule" && node.name === "font-face") {
-        insideFontFace = true
+      // Track at-rule context (@font-face, @page, @property, @media…)
+      if (node.type === "Atrule" && node.block) {
+        const prelude = node.prelude ? csstree.generate(node.prelude) : ""
+        ctxStack.push({
+          selector: `@${node.name}${prelude ? ` ${prelude}` : ""}`,
+          helper: false,
+          atrule: node.name.toLowerCase(),
+        })
+        restoreCtx()
       }
 
       // Track current selector for context
       if (node.type === "Rule" && node.prelude) {
-        currentSelector = csstree.generate(node.prelude)
-        inHelperRule = isHelperImportantRule(node.prelude)
+        ctxStack.push({
+          selector: csstree.generate(node.prelude),
+          helper: isHelperImportantRule(node.prelude),
+          atrule: null,
+        })
+        restoreCtx()
 
         // Check for empty rules
         if (node.block && node.block.type === "Block") {
@@ -154,8 +194,9 @@ export function validateCssLocal(css: string): W3cValidationResult {
         // Skip custom properties (--var)
         if (property.startsWith("--")) return
 
-        // Skip @font-face descriptors (src, font-display, etc.)
-        if (insideFontFace && FONT_FACE_DESCRIPTORS.has(property.toLowerCase())) return
+        // Skip at-rule descriptors (@font-face src, @property syntax, @page size…)
+        const innerAtrule = ctxStack[ctxStack.length - 1]?.atrule
+        if (innerAtrule && AT_RULE_DESCRIPTORS[innerAtrule]?.has(property.toLowerCase())) return
 
         // Vendor-prefixed property warning
         if (
@@ -212,8 +253,9 @@ export function validateCssLocal(css: string): W3cValidationResult {
       }
     },
     leave(node: import("css-tree").CssNode) {
-      if (node.type === "Atrule" && node.name === "font-face") {
-        insideFontFace = false
+      if ((node.type === "Atrule" && node.block) || (node.type === "Rule" && node.prelude)) {
+        ctxStack.pop()
+        restoreCtx()
       }
     },
   })
@@ -270,10 +312,14 @@ function checkDuplicateProperties(
                 context: `${selector} { ${prop}: ${value} }`,
                 type: "duplicate-property",
               })
+            } else if (VENDOR_VALUE_RE.test(prev.value)) {
+              // Fallback intencional: el valor anterior usa una función/keyword
+              // con prefijo vendor (`background:-webkit-linear-gradient(…)` y
+              // luego `background:linear-gradient(…)`, `display:-webkit-box;
+              // display:flex`). No se avisa.
             } else {
               // Sobrescritura: misma propiedad con valor distinto en la misma
-              // regla. El segundo valor gana; suele ser un error (salvo
-              // fallbacks intencionales tipo `display:-webkit-box; display:flex`).
+              // regla. El segundo valor gana; suele ser un error.
               warnings.push({
                 line,
                 message: `Propiedad "${prop}" sobrescrita en la misma regla (linea ${prev.line}): gana "${value}" sobre "${prev.value}"`,
@@ -290,11 +336,10 @@ function checkDuplicateProperties(
 }
 
 /**
- * Get the source line for context display.
+ * Get the source line for context display (recibe las líneas ya partidas).
  */
-function getLineContext(css: string, line: number): string {
+function getLineContext(lines: string[], line: number): string {
   if (line <= 0) return ""
-  const lines = css.split("\n")
   if (line > lines.length) return ""
   return lines[line - 1]?.trim().slice(0, 120) || ""
 }
