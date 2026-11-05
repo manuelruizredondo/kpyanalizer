@@ -379,9 +379,33 @@ async function withFullDetail(scan: Scan, signal?: AbortSignal): Promise<ScanDet
   }
   return {
     ...scan,
-    analysis_data: detail.analysis_data,
+    analysis_data: withAnalysisDefaults(detail.analysis_data),
     w3c_validation: detail.w3c_validation ?? undefined,
     ds_coverage: detail.ds_coverage ?? undefined,
+  }
+}
+
+/**
+ * Los escaneos guardados con versiones antiguas del analizador no tienen los
+ * campos añadidos después (fontFamilies, fontWeights, Angular…). Se completan
+ * con valores vacíos para que las vistas que los leen no revienten.
+ */
+function withAnalysisDefaults(a: AnalysisResult): AnalysisResult {
+  return {
+    ...a,
+    spacingValues: a.spacingValues ?? [],
+    zIndexValues: a.zIndexValues ?? [],
+    fontWeights: a.fontWeights ?? [],
+    fontFamilies: a.fontFamilies ?? [],
+    importants: a.importants ?? [],
+    duplicateDeclarations: a.duplicateDeclarations ?? [],
+    mediaQueries: a.mediaQueries ?? [],
+    keyframes: a.keyframes ?? [],
+    specificityDistribution: a.specificityDistribution ?? [],
+    maxSpecificity: a.maxSpecificity ?? [0, 0, 0],
+    angularEncapsulationCount: a.angularEncapsulationCount ?? 0,
+    angularEncapsulationBreakdown: a.angularEncapsulationBreakdown ?? { host: 0, hostContext: 0, ngDeep: 0, deepCombinator: 0 },
+    angularEncapsulationLocations: a.angularEncapsulationLocations ?? [],
   }
 }
 

@@ -54,10 +54,18 @@ export function useAnalysis() {
     // Solo al montar: `css` es el valor restaurado de sessionStorage.
   }, [])
 
+  // CSS pendiente de guardar (el guardado va con debounce): si el usuario sale
+  // de la página antes de que venza, se guarda al desmontar para no perderlo.
+  const pendingPersistRef = useRef<string | null>(null)
+
   // Cleanup debounce on unmount
   useEffect(() => {
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current)
+      if (pendingPersistRef.current !== null) {
+        persistCss(pendingPersistRef.current)
+        pendingPersistRef.current = null
+      }
     }
   }, [])
 
@@ -66,6 +74,7 @@ export function useAnalysis() {
     if (!cssText.trim()) {
       if (debounceRef.current) clearTimeout(debounceRef.current)
       analysisIdRef.current++
+      pendingPersistRef.current = null
       persistCss("")
       setResult(null)
       setError(null)
@@ -79,11 +88,13 @@ export function useAnalysis() {
     if (debounceRef.current) clearTimeout(debounceRef.current)
 
     const thisId = ++analysisIdRef.current
+    pendingPersistRef.current = cssText
 
     debounceRef.current = setTimeout(() => {
       // Persistir también con debounce: copiar MBs a sessionStorage en cada
       // tecla es tan caro como el propio análisis.
       persistCss(cssText)
+      pendingPersistRef.current = null
       // Use requestIdleCallback if available, else requestAnimationFrame
       const scheduleAnalysis = (cb: () => void) => {
         if ('requestIdleCallback' in window) {

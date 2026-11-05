@@ -55,7 +55,9 @@ export async function fetchViaCorsProxy(
     }
     // Se lee el cuerpo aquí dentro para que el timeout cubra también la descarga.
     const body = await resp.arrayBuffer()
-    return new Response(body, { status: resp.status, statusText: resp.statusText, headers: resp.headers })
+    // 204/205/304 no admiten cuerpo: new Response(body, …) lanzaría un TypeError.
+    const nullBody = resp.status === 204 || resp.status === 205 || resp.status === 304
+    return new Response(nullBody ? null : body, { status: resp.status, statusText: resp.statusText, headers: resp.headers })
   } catch (err) {
     if (err instanceof DOMException && err.name === 'AbortError' && !signal?.aborted) {
       throw new Error('La descarga tardó demasiado. Inténtalo de nuevo.')
